@@ -69,6 +69,10 @@ Details in `knowledge/architecture.md`. In short:
   check does not catch: declare `var frames: Array[Frame] = []`.
 - The PixelLab API checks the token before the body (401 before 422), so request validation
   cannot be tested against the real API without a token; use `scripts/test-pixellab.sh`.
+  To test from a git worktree (whose `Pixelorama/` symlink still points at the main checkout's
+  extension), clone `Pixelorama/` elsewhere (`cp -cR`), point its `src/Extensions/AIStudio`
+  symlink at the worktree, and launch it with `HOME=<isolated dir>` (Godot derives `user://`
+  from `$HOME` on macOS) and another `bridge_port` in that copy's `settings.cfg`.
 - Do not kill Pixelorama with `pkill`: it leaves `.running` and `extensions/Monitoring.ini`
   behind, and the next launch flags the extension as faulty. On macOS quit with
   `osascript -e 'quit app "Godot"'`.
@@ -82,3 +86,6 @@ Details in `knowledge/architecture.md`. In short:
   messages stay in English because MCP clients receive them verbatim.
 - The UI lives inside Pixelorama: use its controls and theme only.
 - Document complex changes in `knowledge/`; track debt in `knowledge/TECH_DEBT.md`.
+- Z-Image Turbo edits: do not drive img2img with KSampler's `denoise`. With 8 steps it only
+  offers a few coarse start points, and all of them keep the init colors. Use `ManualSigmas` +
+  `SamplerCustom` (see "Edit modes" in `knowledge/architecture.md`).

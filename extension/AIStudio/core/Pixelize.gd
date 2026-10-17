@@ -240,6 +240,39 @@ static func _rgba8(source: Image) -> Image:
 	return image
 
 
+## Unique opaque colors of [param image], or an empty array when there are more than
+## [param limit] (the image is then not limited-palette pixel art).
+static func opaque_colors(image: Image, limit: int) -> PackedColorArray:
+	var seen := {}
+	for y in image.get_height():
+		for x in image.get_width():
+			var color := image.get_pixel(x, y)
+			if color.a >= 0.5:
+				seen[Color(color, 1.0).to_rgba32()] = true
+				if seen.size() > limit:
+					return PackedColorArray()
+	var colors := PackedColorArray()
+	for key: int in seen:
+		colors.append(Color.hex(key))
+	return colors
+
+
+static func has_transparency(image: Image) -> bool:
+	for y in image.get_height():
+		for x in image.get_width():
+			if image.get_pixel(x, y).a < 0.5:
+				return true
+	return false
+
+
+## Blends [param image] over an opaque [param background] (image models ignore alpha).
+static func flatten(image: Image, background: Color) -> Image:
+	var flat := Image.create_empty(image.get_width(), image.get_height(), false, Image.FORMAT_RGBA8)
+	flat.fill(background)
+	flat.blend_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+	return flat
+
+
 static func color_distance(a: Color, b: Color) -> float:
 	return Vector3(a.r - b.r, a.g - b.g, a.b - b.b).length()
 
