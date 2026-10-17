@@ -1,23 +1,22 @@
-# Deuda técnica
+# Technical debt
 
-- PixelLab: probado solo el error sin token; falta una generación real y confirmar la forma de
-  la respuesta 202 (`background_job_id`).
-- `dist/AIStudio.zip`: sin probar en Pixelorama.app oficial. En instalaciones empaquetadas hay
-  que fijar la carpeta MCP a mano.
-- Grok: el coste por imagen lo domina el bucle del agente (~265k tokens). Limitar herramientas
-  con `--tools` cuando se confirmen sus IDs internos (`image_gen` + la herramienta de shell).
-- Pixelize: el quitado de fondo es por inundación desde el borde con tolerancia fija (0,12);
-  falla con fondos degradados. Valorar un paso de segmentación en ComfyUI.
-- Sin tests automatizados de GDScript (ni GUT ni gdUnit). Hoy se verifica arrancando Pixelorama
-  headless y hablando con el puente.
-- `user://ai_studio/jobs/<id>/` guarda una carpeta por ejecución de Grok/Claude (con stdout)
-  y nunca se poda.
-- `scripts/register-mcp.sh` no cubre Claude Desktop: su `claude_desktop_config.json` es JSON
-  curado por el usuario y se edita a mano (entrada `pixelorama` con la ruta absoluta de `uv`).
-- Las cuatro primeras imágenes de prueba quedaron en `~/ComfyUI-Shared/output/pixelorama-ai/`
-  (antes del cambio a `PreviewImage`); se pueden borrar a mano.
-- Variantes con `new_frame`: cada una se inserta tras el frame actual, así que quedan en orden
-  inverso.
-- Pixelorama con Metal nativo (`--rendering-method mobile --rendering-driver metal`) arranca
-  sin errores en Godot 4.7; falta comparar visualmente los shaders de efectos y el rendimiento
-  con lienzos grandes antes de cambiar el renderizador por defecto.
+- PixelLab: only the missing-token error has been exercised; a real generation and the exact
+  shape of a 202 response (`background_job_id`) are still unconfirmed.
+- PixelLab UI is shown even when no token is configured; it should stay hidden until one is.
+- `dist/AIStudio.zip` is untested in an official Pixelorama build. Packaged installs need the
+  MCP folder set by hand in the settings.
+- Grok: agent-loop overhead dominates the cost per image (~265k tokens). Restrict tools with
+  `--tools` once the internal tool IDs are confirmed (`image_gen` plus the shell tool).
+- Pixelize: background removal is a border flood fill with a fixed tolerance (0.12); it fails
+  on gradient backgrounds.
+- No automated GDScript tests (GUT or gdUnit). Verification today means running Pixelorama
+  headless and talking to the bridge.
+- `user://ai_studio/jobs/<id>/` keeps one folder per Grok/Claude run (with stdout) and is never
+  pruned.
+- `scripts/register-mcp.sh` does not cover Claude Desktop: its config is user-curated JSON and
+  is edited by hand (see README).
+- Variants with `new_frame` are inserted after the current frame, so they end up in reverse
+  order.
+- Pixelorama on native Metal (`--rendering-method mobile --rendering-driver metal`) starts
+  without errors on Godot 4.7; effect shaders and large-canvas performance still need a visual
+  comparison before switching the default renderer.

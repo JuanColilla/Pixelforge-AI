@@ -3,6 +3,7 @@ name = "pixelorama-mcp"
 version = "0.1.0"
 description = "MCP server that lets Claude draw pixel art in Pixelorama through the AI Studio bridge"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = ["mcp>=2.3,<3"]
 
 [project.scripts]

@@ -2,7 +2,7 @@
 	"name": "AIStudio",
 	"display_name": "AI Studio",
 	"description": "Pixel art generation with ComfyUI (local), Grok CLI, PixelLab API and Claude CLI, plus a local bridge for the pixelorama-mcp server.",
-	"author": "Juan",
+	"author": "Pixelforge AI contributors",
 	"version": "0.1.0",
 	"license": "MIT",
 	"supported_api_versions": [9],

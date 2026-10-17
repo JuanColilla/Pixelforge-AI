@@ -1,9 +1,9 @@
-# Arquitectura de AI Studio
+# AI Studio architecture
 
-## Flujo
+## Flow
 
 ```
-Panel AI Studio ─┐                         ┌─ ComfyUIProvider ── HTTP ── ComfyUI :8188
+AI Studio panel ─┐                         ┌─ ComfyUIProvider ── HTTP ── ComfyUI :8188
                  ├─ Generator.generate() ──┼─ GrokProvider ───── ProcessRunner ── grok -p
 MCP ─ Bridge ────┘        │                ├─ PixelLabProvider ─ HTTPS ── api.pixellab.ai/v2
                           │                └─ ClaudeProvider ─── ProcessRunner ── claude -p
@@ -11,74 +11,71 @@ MCP ─ Bridge ────┘        │                ├─ PixelLabProvider
                    Pixelize.to_pixel_art ──► CanvasOps.write_cel ──► set_pixelcel_image (undo)
 ```
 
-Claude en modo agente cierra el círculo: `claude -p --mcp-config` lanza `pixelorama-mcp`, que
-habla con el puente y dibuja con las mismas `CanvasOps`. Por eso `Generator` separa
-`agent_busy` de `image_busy`: un agente en curso puede pedir generaciones de imagen.
+Claude's agent mode closes the loop: `claude -p --mcp-config` launches `pixelorama-mcp`, which
+talks to the bridge and draws with the same `CanvasOps`. That is why `Generator` tracks
+`agent_busy` apart from `image_busy`: a running agent may request image generations.
 
-## Ficheros
+## Files
 
-| Fichero | Responsabilidad |
+| File | Responsibility |
 |---|---|
-| `Main.gd` | Monta todo, registra la traducción y la pestaña; lo desmonta al desactivar. |
-| `core/Settings.gd` | `user://ai_studio/settings.cfg`; resuelve ejecutables y la carpeta MCP siguiendo el symlink. |
-| `core/CanvasOps.gd` | Lectura/escritura del lienzo, capas, frames, deshacer. Única puerta de escritura. |
-| `core/PixelGrid.gd` | Formato texto: paleta hex + filas base62 (`.` = no tocar). |
-| `core/Pixelize.gd` | Encaje, quitar fondo por inundación desde el borde, alfa binaria, k-means / paleta. |
-| `core/Generator.gd` | Normaliza la petición, elige motor, pixeliza y coloca. |
-| `core/Http.gd` | `HTTPRequest` con `await`; decodifica PNG/JPEG/WebP por firma. |
-| `core/Translations.gd` | Cadenas en español para `tr()`. |
-| `providers/*.gd` | Un fichero por motor; todos exponen `generate()` y `cancel()`. |
-| `providers/ProcessRunner.gd` | `/bin/sh -c exec …` con salida a ficheros, sondeo de PID, kill. |
-| `bridge/BridgeServer.gd` | Servidor TCP JSON-lines con token. |
-| `ui/StudioPanel.gd` | Pestaña del dock, construida por código. |
+| `Main.gd` | Wires everything, registers the translation and the dock tab; tears it all down when disabled. |
+| `core/Settings.gd` | `user://ai_studio/settings.cfg`; resolves executables and the MCP folder by following the dev symlink. |
+| `core/CanvasOps.gd` | Canvas reads/writes, layers, frames, undo. The only write path. |
+| `core/PixelGrid.gd` | Text format: hex palette + base62 index rows (`.` = leave untouched). |
+| `core/Pixelize.gd` | Fit, border flood-fill background removal, hard alpha, k-means / palette mapping. |
+| `core/Generator.gd` | Normalizes requests, picks the engine, pixelizes, places results, variants. |
+| `core/Http.gd` | Awaitable `HTTPRequest`; decodes PNG/JPEG/WebP by signature. |
+| `core/Translations.gd` | Spanish strings for `tr()`. |
+| `providers/*.gd` | One file per engine; each exposes `generate()` and `cancel()`. |
+| `providers/ProcessRunner.gd` | `/bin/sh -c exec …` with output to files, PID polling, kill on cancel/timeout. |
+| `bridge/BridgeServer.gd` | Token-protected JSON-lines TCP server. |
+| `ui/StudioPanel.gd` | Dock tab, built in code. |
 
-## Protocolo del puente
+## Bridge protocol
 
-Una línea JSON por petición y por respuesta:
+One JSON line per request and per response:
 
 ```json
 {"id": 1, "token": "<bridge.json>", "method": "paint_grid", "params": {"x": 0, "y": 0, "palette": ["#00000000", "#ffcc00"], "rows": ["0110"]}}
 {"id": 1, "result": {"frame": 0, "layer": 1, "pixels": 2}}
 ```
 
-Métodos: `ping`, `get_project_info`, `view_canvas`, `read_pixels`, `draw_pixels`, `draw_line`,
+Methods: `ping`, `get_project_info`, `view_canvas`, `read_pixels`, `draw_pixels`, `draw_line`,
 `draw_rect`, `fill`, `paint_grid`, `clear_cel`, `batch`, `set_image`, `add_layer`, `add_frame`,
 `select_cel`, `new_project`, `undo`, `redo`, `generate`, `cancel`.
 
-Todas las operaciones de dibujo pasan por `CanvasOps.apply_ops`: cada operación (`pixels`,
-`line`, `rect`, `fill`, `grid`, `clear`) se valida y compila a un `Callable`, y el lote se
-aplica sobre una copia del cel que se escribe una sola vez. Una operación inválida aborta el
-lote sin dibujar nada. `batch` expone esto al MCP, que manda N operaciones en una llamada y
-un solo paso de deshacer.
+Every drawing operation goes through `CanvasOps.apply_ops`: each op (`pixels`, `line`, `rect`,
+`fill`, `grid`, `clear`) is validated and compiled to a `Callable`, and the batch is applied to
+a copy of the cel that is written once. An invalid op aborts the batch before anything is
+drawn. `batch` exposes this to MCP: N operations in one call and one undo step.
 
-`generate` acepta `variants` (1–4, semillas consecutivas) y `preview` (devuelve una hoja de
-contacto PNG). Con `new_layer`, la primera variante queda visible y el resto en capas ocultas.
+`generate` accepts `variants` (1–4, consecutive seeds) and `preview` (returns a PNG contact
+sheet). With `new_layer`, the first variant stays visible and the rest go to hidden layers.
 
-`frame`/`layer` = -1 usa el cel actual; en `view_canvas`, `layer` = -1 mezcla todas las capas
-visibles.
+`frame`/`layer` = -1 means the current cel; in `view_canvas`, `layer` = -1 blends all visible
+layers.
 
-## Motores
+## Engines
 
-- **ComfyUI**: grafo Z-Image Turbo en formato API (8 pasos, `res_multistep`, cfg 1). El área
-  de generación depende del destino: 512² hasta 128 px, 768² hasta 256 px y 1024² por encima.
-  Benchmark en M5 Max: 13,4 s a 1024 px frente a 3,3 s a 512 px; un lote de 4 a 512 px tarda
-  15,2 s, así que agrupar en lote no ahorra tiempo en MPS. La salida es `PreviewImage` (carpeta
-  temp de ComfyUI). La primera generación tras arrancar ComfyUI añade la carga del modelo
-  (~60 s). Se puede sustituir por un workflow propio con `{{prompt}}`, `{{width}}`,
-  `{{height}}` y `{{seed}}`.
-- **Grok CLI**: `grok -p … --always-approve --output-format json --max-turns 8`, con la orden
-  de guardar el PNG en la carpeta del trabajo. Unos 30 s y unos 0,08 $ por imagen; casi todo
-  el coste es el bucle del agente.
-- **PixelLab**: `POST /v2/create-image-pixflux` (16–400 px, pixel art nativo); soporta
-  `color_image` para forzar la paleta y sondea `/background-jobs` si la respuesta es 202.
-  Token: `PIXELLAB_API_TOKEN` o los ajustes. Sin probar con token real.
-- **Claude, píxeles**: `--json-schema` con paleta + filas base62, hasta 128×128. 16×16 en unos
-  17 s con `sonnet`.
-- **Claude, agente**: `--mcp-config` temporal + `--allowedTools mcp__pixelorama`.
+- **ComfyUI**: Z-Image Turbo graph in API format (8 steps, `res_multistep`, cfg 1). The render
+  area follows the target: 512² up to 128 px, 768² up to 256 px, 1024² above. Benchmark on an
+  Apple M5 Max: 13.4 s at 1024 px vs 3.3 s at 512 px; a batch of 4 at 512 px takes 15.2 s, so
+  batching does not pay off on MPS. Output uses `PreviewImage` (ComfyUI's temp folder). The
+  first generation after ComfyUI starts adds model loading (~60 s). A custom API-format
+  workflow can replace the graph using `{{prompt}}`, `{{width}}`, `{{height}}` and `{{seed}}`.
+- **Grok CLI**: `grok -p … --always-approve --output-format json --max-turns 8`, told to save
+  the PNG in the job folder. About 30 s and USD 0.08 per image, mostly agent-loop overhead.
+- **PixelLab**: `POST /v2/create-image-pixflux` (16–400 px, native pixel art); supports
+  `color_image` to force a palette and polls `/background-jobs` on 202. Token from
+  `PIXELLAB_API_TOKEN` or the settings.
+- **Claude, pixels**: `--json-schema` returning palette + base62 rows, up to 128×128. A 16×16
+  sprite takes about 17 s with `sonnet`.
+- **Claude, agent**: temporary `--mcp-config` + `--allowedTools mcp__pixelorama`.
 
-## Limitaciones conocidas
+## Known limitations
 
-- Pixelorama solo repinta cuando su ventana es visible (macOS). Para ver dibujar a Claude,
-  deja la ventana visible al lado.
-- `dist/AIStudio.zip` para un Pixelorama de serie no está probado con la app oficial.
-- Los errores de los motores se muestran en inglés.
+- On macOS, Pixelorama only repaints while its window is visible. To watch Claude draw, keep
+  the window visible next to your chat.
+- `dist/AIStudio.zip` has not been tested against an official Pixelorama build.
+- Engine errors are shown in English.

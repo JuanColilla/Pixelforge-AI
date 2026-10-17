@@ -1,72 +1,70 @@
-# PixelLab (local) — AGENTS.md
+# AGENTS.md — Pixelforge AI
 
-Type: personal
-Architecture: godot-extension + python-mcp
+Guide for AI coding agents (Claude Code, Codex, Grok, Cursor…) working on this repository.
+`CLAUDE.md` only points here. Human-facing docs live in `README.md`.
 
-Editor de pixel art local: **Pixelorama** (código abierto, MIT, Godot 4.7) con una extensión
-propia, **AI Studio**, que genera sprites con cuatro motores y expone el lienzo a asistentes
-mediante MCP. No contiene código de pixellab.ai: es una reimplementación limpia contra APIs
-públicas.
+Pixelforge AI is an AI-assisted pixel-art editor: upstream **Pixelorama** (MIT, Godot 4.7) plus
+the **AI Studio** extension, which generates sprites with several engines and exposes the
+canvas to assistants through MCP. It talks only to public APIs; no third-party proprietary code.
 
-## STACK
+## Stack
 
-- Pixelorama `v1.2.3` (clon en `Pixelorama/`, rama local `ai-studio`, ignorado por este repo).
-- Godot `4.7.x` (`brew install --cask godot`).
-- Extensión GDScript en `extension/AIStudio/` (enlazada por symlink a
-  `Pixelorama/src/Extensions/AIStudio`).
-- Servidor MCP en Python ≥ 3.11 con `mcp` 2.x (`MCPServer`, no `FastMCP`), gestionado con `uv`.
-- Motores: ComfyUI local (Z-Image Turbo por defecto), Grok CLI (`image_gen`), API v2 de
-  PixelLab (pixflux) y Claude CLI (modo píxeles con `--json-schema` y modo agente vía MCP).
+- Pixelorama `v1.2.3`, cloned into `Pixelorama/` by `scripts/setup.sh` (git-ignored, local
+  branch `ai-studio`, patched with `patches/pixelorama-load-aistudio.patch`).
+- Godot `4.7.x`.
+- GDScript extension in `extension/AIStudio/`, symlinked to `Pixelorama/src/Extensions/AIStudio`.
+- MCP server in Python ≥ 3.11 with `mcp` 2.x (`MCPServer`, not the v1 `FastMCP`), run with `uv`.
+- Engines: ComfyUI (local, Z-Image Turbo by default), Grok CLI (`image_gen`), PixelLab API v2,
+  Claude CLI (pixel mode via `--json-schema`, agent mode via MCP).
 
-## COMMANDS
+## Commands
 
 ```bash
-scripts/setup.sh          # clona Pixelorama, aplica el parche, symlink, import, uv sync
-scripts/run.sh            # arranca Pixelorama desde el código fuente
-scripts/package.sh        # dist/AIStudio.zip para un Pixelorama de serie
-scripts/register-mcp.sh   # registra pixelorama-mcp en Claude Code / Grok (scope user)
-godot --headless --path Pixelorama --quit-after 300   # comprobación de carga sin ventana
+scripts/setup.sh          # clone + patch Pixelorama, symlink, import assets, uv sync
+scripts/run.sh            # run Pixelorama from source with the extension
+scripts/package.sh        # dist/AIStudio.zip for a stock Pixelorama build
+scripts/register-mcp.sh   # register pixelorama-mcp with Claude Code and/or Grok (user scope)
+godot --headless --path Pixelorama --quit-after 300   # load check without a window
 ```
 
-Claude Desktop: añadir a mano en `~/Library/Application Support/Claude/claude_desktop_config.json`
-→ `mcpServers.pixelorama` = `{"command": "<ruta absoluta de uv>", "args": ["run", "--quiet",
-"--directory", "<repo>/mcp", "pixelorama-mcp"]}` y reiniciar Claude Desktop.
+## Architecture
 
-## ARCHITECTURE
+Details in `knowledge/architecture.md`. In short:
 
-Ver `knowledge/architecture.md`. Resumen:
+- `core/Generator.gd` orchestrates engine → `Pixelize.gd` → `CanvasOps.gd` (layer/cel/frame).
+- `core/CanvasOps.gd` is the only write path to the canvas. Drawing ops are compiled and
+  applied as one batch through `ExtensionsApi.project.set_pixelcel_image`: one undo step each.
+- `bridge/BridgeServer.gd`: JSON-lines over TCP on `127.0.0.1:47821`; random token in
+  `<Pixelorama user dir>/ai_studio/bridge.json` (owner-only permissions).
+- `mcp/src/pixelorama_mcp/server.py`: thin MCP (stdio) → bridge translator.
 
-- `core/Generator.gd` orquesta: motor → `Pixelize.gd` → `CanvasOps.gd` (capa/cel/frame).
-- `core/CanvasOps.gd` es la única puerta de escritura al lienzo; toda escritura pasa por
-  `ExtensionsApi.project.set_pixelcel_image` → una entrada de deshacer por operación.
-- `bridge/BridgeServer.gd`: TCP JSON-lines en `127.0.0.1:47821`, token aleatorio en
-  `~/Library/Application Support/pixelorama/ai_studio/bridge.json` (permisos 600).
-- `mcp/src/pixelorama_mcp/server.py`: traductor fino MCP (stdio) → puente.
+### Invariants
 
-### Invariantes
+- INV-1: the bridge listens on `127.0.0.1` only and checks the token on every request.
+- INV-2: no canvas write bypasses `CanvasOps.write_cel`, so undo history stays complete.
+- INV-3: extension nodes use `PROCESS_MODE_ALWAYS`; Pixelorama pauses the scene tree when
+  unfocused and the bridge must keep answering.
+- INV-4: external CLIs run through `ProcessRunner` (non-blocking, cancellable, with timeout);
+  never `OS.execute` on the main thread.
+- INV-5: secrets (PixelLab token, bridge token) live only in `user://ai_studio/`, never in the
+  repo or in logs.
 
-- INV-1: el puente solo escucha en `127.0.0.1` y exige el token en cada petición.
-- INV-2: ninguna escritura al lienzo esquiva `CanvasOps.write_cel` (deshacer siempre íntegro).
-- INV-3: los nodos de la extensión usan `PROCESS_MODE_ALWAYS`; Pixelorama pausa el árbol al
-  perder el foco y el puente debe seguir respondiendo.
-- INV-4: los CLIs se lanzan con `ProcessRunner` (no bloquea, permite cancelar y timeout);
-  nunca `OS.execute` en el hilo principal.
-- INV-5: secretos (token de PixelLab, token del puente) solo en `user://ai_studio/`, nunca
-  en el repo ni en logs.
+## Verification
 
-## LEARNED CORRECTIONS
+- `godot --check-only -s` does not register autoloads or compile Pixelorama's classes, so it
+  reports false errors for scripts that use them. Run Pixelorama headless
+  (`--quit-after N`) and read the log instead.
+- Run only one Pixelorama instance at a time: instances share the user dir and the bridge port.
+- Do not kill Pixelorama with `pkill`: it leaves `.running` and `extensions/Monitoring.ini`
+  behind, and the next launch flags the extension as faulty. On macOS quit with
+  `osascript -e 'quit app "Godot"'`.
+- macOS does not repaint a fully covered Godot window; bridge changes still apply.
 
-- `godot --check-only -s` no registra autoloads ni compila clases de Pixelorama: da falsos
-  errores en scripts que las usan. La verificación válida es arrancar Pixelorama
-  (`--headless --quit-after N`) y leer el log.
-- Matar Pixelorama con `pkill` deja `.running` y `extensions/Monitoring.ini`; en el siguiente
-  arranque marca la extensión como sospechosa. Cerrar con `osascript -e 'quit app "Godot"'`.
-- macOS no repinta la ventana de Godot si está totalmente tapada; los cambios por MCP sí se
-  aplican y aparecen al volver a verla.
-- En `await`, nunca usar un ternario con dos corutinas: usar `if/else` con `await` en cada rama.
+## Conventions
 
-## DESIGN SYSTEM
-
-La UI vive dentro de Pixelorama: se usan solo sus controles y su tema. Textos de la UI con
-`tr()`; las traducciones al español están en `core/Translations.gd`. Los mensajes de error de
-motores van en inglés porque también llegan tal cual a los clientes MCP.
+- GDScript: never `await` a ternary of two coroutines; use `if/else` with `await` per branch.
+- Reach Pixelorama autoloads through `ExtensionsApi` where possible.
+- UI text goes through `tr()`; Spanish strings live in `core/Translations.gd`. Engine error
+  messages stay in English because MCP clients receive them verbatim.
+- The UI lives inside Pixelorama: use its controls and theme only.
+- Document complex changes in `knowledge/`; track debt in `knowledge/TECH_DEBT.md`.

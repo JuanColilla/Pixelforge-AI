@@ -1,4 +1,4 @@
 # Knowledge
 
-- [architecture.md](architecture.md) — flujo de AI Studio, protocolo del puente, motores y límites. Cargar antes de tocar `extension/` o `mcp/`.
-- [TECH_DEBT.md](TECH_DEBT.md) — deuda conocida y pruebas pendientes.
+- [architecture.md](architecture.md) — AI Studio flow, bridge protocol, engines and limits. Read before touching `extension/` or `mcp/`.
+- [TECH_DEBT.md](TECH_DEBT.md) — known debt and pending tests.
