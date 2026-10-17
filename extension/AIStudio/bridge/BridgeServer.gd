@@ -182,7 +182,22 @@ func _dispatch(method: String, p: Dictionary) -> Dictionary:
 			return canvas.undo()
 		"redo":
 			return canvas.redo()
+		"select_rect":
+			return canvas.select_rect(
+				Rect2i(int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("width", 0)), int(p.get("height", 0)))
+			)
+		"clear_selection":
+			return canvas.clear_selection()
 		"generate":
+			return await generator.generate(p)
+		"edit_image", "inpaint":
+			# x/y/width/height pick the region (img2img) or mask (inpaint), not an output size.
+			p["rect"] = {
+				"x": p.get("x", 0), "y": p.get("y", 0), "width": p.get("width", 0), "height": p.get("height", 0)
+			}
+			p.erase("width")
+			p.erase("height")
+			p["mode"] = "img2img" if method == "edit_image" else "inpaint"
 			return await generator.generate(p)
 		"cancel":
 			generator.cancel()

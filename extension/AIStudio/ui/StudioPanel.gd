@@ -2,6 +2,11 @@ extends ScrollContainer
 ## The "AI Studio" dock: prompt, engine, output options and settings.
 
 const Generator := preload("../core/Generator.gd")
+const MODE_LABELS := {
+	"txt2img": "Text to image",
+	"img2img": "Edit image",
+	"inpaint": "Inpaint selection",
+}
 const TARGET_LABELS := {
 	"new_layer": "New layer",
 	"current_cel": "Current cel",
@@ -23,7 +28,12 @@ var canvas: RefCounted
 var generator: Node
 var bridge: Node
 
+var _mode: OptionButton
 var _engine: OptionButton
+var _engine_container: Control
+var _strength: SpinBox
+var _strength_container: Control
+var _keep_palette: CheckBox
 var _prompt: TextEdit
 var _width: SpinBox
 var _height: SpinBox
@@ -33,6 +43,7 @@ var _remove_background: CheckBox
 var _target: OptionButton
 var _seed: SpinBox
 var _variants: SpinBox
+var _variants_container: Control
 var _generate: Button
 var _cancel: Button
 var _status: Label
@@ -42,6 +53,7 @@ var _setting_fields := {}
 var _bridge_port: SpinBox
 var _bridge_enabled: CheckBox
 var _size_dependent: Array[Control] = []
+var _size_container: Control
 
 
 func setup(settings_store: RefCounted, canvas_ops: RefCounted, generator_node: Node, bridge_node: Node) -> void:
@@ -60,12 +72,21 @@ func _ready() -> void:
 	root.add_theme_constant_override("separation", 6)
 	add_child(root)
 
+	_mode = OptionButton.new()
+	for key: String in MODE_LABELS:
+		_mode.add_item(tr(MODE_LABELS[key]))
+		_mode.set_item_metadata(_mode.item_count - 1, key)
+	_mode.tooltip_text = tr("Edit image and Inpaint start from the current cel and run on ComfyUI")
+	_mode.item_selected.connect(_on_mode_selected)
+	root.add_child(_labeled(tr("Mode"), _mode))
+
 	_engine = OptionButton.new()
 	for key: String in Generator.ENGINE_LABELS:
 		_engine.add_item(tr(Generator.ENGINE_LABELS[key]))
 		_engine.set_item_metadata(_engine.item_count - 1, key)
-	_engine.item_selected.connect(_on_engine_selected)
-	root.add_child(_labeled(tr("Engine"), _engine))
+	_engine.item_selected.connect(func(_index: int) -> void: _refresh_visibility())
+	_engine_container = _labeled(tr("Engine"), _engine)
+	root.add_child(_engine_container)
 
 	_prompt = TextEdit.new()
 	_prompt.placeholder_text = tr("Describe the sprite, tile or scene…")
@@ -87,6 +108,13 @@ func _ready() -> void:
 	var size_container := _labeled(tr("Size"), size_row)
 	root.add_child(size_container)
 
+	_strength = _spin(0.05, 1.0, 1.0)
+	_strength.step = 0.05
+	_strength.value = Generator.DEFAULT_STRENGTH.img2img
+	_strength.tooltip_text = tr("How much the pixels may change: 0.3 refines details, 0.6 restyles, 0.85 repaints colors, 1 ignores the original")
+	_strength_container = _labeled(tr("Strength"), _strength)
+	root.add_child(_strength_container)
+
 	_colors = _spin(0, 62, 16)
 	_colors.tooltip_text = tr("Maximum colors after quantization (0 keeps all colors)")
 	var colors_container := _labeled(tr("Colors"), _colors)
@@ -95,6 +123,12 @@ func _ready() -> void:
 	_use_palette = CheckBox.new()
 	_use_palette.text = tr("Use current palette")
 	root.add_child(_use_palette)
+
+	_keep_palette = CheckBox.new()
+	_keep_palette.text = tr("Keep the cel's colors")
+	_keep_palette.tooltip_text = tr("Quantize the result to the colors already in the cel")
+	_keep_palette.button_pressed = true
+	root.add_child(_keep_palette)
 
 	_remove_background = CheckBox.new()
 	_remove_background.text = tr("Remove background")
@@ -115,8 +149,8 @@ func _ready() -> void:
 
 	_variants = _spin(1, Generator.MAX_VARIANTS, 1)
 	_variants.tooltip_text = tr("Extra variants use the next seeds and land on hidden layers")
-	var variants_container := _labeled(tr("Variants"), _variants)
-	root.add_child(variants_container)
+	_variants_container = _labeled(tr("Variants"), _variants)
+	root.add_child(_variants_container)
 
 	_size_dependent = [
 		size_container,
@@ -125,8 +159,9 @@ func _ready() -> void:
 		_remove_background,
 		target_container,
 		seed_container,
-		variants_container,
+		_variants_container,
 	]
+	_size_container = size_container
 
 	var actions := HBoxContainer.new()
 	_generate = Button.new()
@@ -167,6 +202,7 @@ func _ready() -> void:
 		if bridge.is_listening()
 		else tr("MCP bridge off")
 	)
+	_refresh_visibility()
 	_use_canvas_size.call_deferred()
 
 
@@ -209,18 +245,25 @@ func _on_save_settings() -> void:
 
 
 func _on_generate_pressed() -> void:
+	var mode: String = _mode.get_item_metadata(_mode.selected)
 	var request := {
+		"mode": mode,
 		"engine": _engine.get_item_metadata(_engine.selected),
 		"prompt": _prompt.text,
-		"width": int(_width.value),
-		"height": int(_height.value),
 		"colors": int(_colors.value),
 		"use_palette": _use_palette.button_pressed,
-		"remove_background": _remove_background.button_pressed,
 		"target": _target.get_item_metadata(_target.selected),
 		"seed": int(_seed.value),
-		"variants": int(_variants.value),
 	}
+	if mode == "txt2img":
+		request["variants"] = int(_variants.value)
+		request["width"] = int(_width.value)
+		request["height"] = int(_height.value)
+		request["remove_background"] = _remove_background.button_pressed
+	else:
+		request["engine"] = "comfyui"
+		request["strength"] = _strength.value
+		request["keep_palette"] = _keep_palette.button_pressed
 	var result: Dictionary = await generator.generate(request)
 	if result.has("message"):
 		_status.text = str(result.message)
@@ -232,10 +275,28 @@ func _on_status_changed(text: String, busy: bool) -> void:
 	_cancel.disabled = not busy
 
 
-func _on_engine_selected(index: int) -> void:
-	var is_agent: bool = _engine.get_item_metadata(index) == "claude_agent"
+## Edit modes write over the current cel by default, and always run on ComfyUI.
+func _on_mode_selected(index: int) -> void:
+	var mode: String = _mode.get_item_metadata(index)
+	_strength.value = Generator.DEFAULT_STRENGTH[mode]
+	var target := "new_layer" if mode == "txt2img" else "current_cel"
+	for i in _target.item_count:
+		if _target.get_item_metadata(i) == target:
+			_target.select(i)
+	_refresh_visibility()
+
+
+func _refresh_visibility() -> void:
+	var editing: bool = _mode.get_item_metadata(_mode.selected) != "txt2img"
+	var is_agent: bool = not editing and _engine.get_item_metadata(_engine.selected) == "claude_agent"
 	for control in _size_dependent:
 		control.visible = not is_agent
+	_engine_container.visible = not editing
+	_size_container.visible = not editing and not is_agent
+	_remove_background.visible = not editing and not is_agent
+	_variants_container.visible = not editing and not is_agent
+	_strength_container.visible = editing
+	_keep_palette.visible = editing
 
 
 func _use_canvas_size() -> void:

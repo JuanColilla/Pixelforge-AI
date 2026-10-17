@@ -127,9 +127,8 @@ func read_pixels(frame: int, layer: int, rect: Rect2i) -> Dictionary:
 	return result
 
 
-## Replaces the whole cel with [param image] (one undo step). The image is cropped or padded
-## to the project size.
-func write_cel(image: Image, frame: int, layer: int) -> Dictionary:
+## Like [method resolve_cel], but also fails when the cel cannot take pixel writes.
+func resolve_writable_cel(frame: int, layer: int) -> Dictionary:
 	var target := resolve_cel(frame, layer)
 	if target.has("error"):
 		return target
@@ -139,6 +138,16 @@ func write_cel(image: Image, frame: int, layer: int) -> Dictionary:
 		return {"error": "layer %d is not a pixel layer" % target.layer}
 	if current.layers[target.layer].is_locked_in_hierarchy():
 		return {"error": "layer %d is locked" % target.layer}
+	return target
+
+
+## Replaces the whole cel with [param image] (one undo step). The image is cropped or padded
+## to the project size.
+func write_cel(image: Image, frame: int, layer: int) -> Dictionary:
+	var target := resolve_writable_cel(frame, layer)
+	if target.has("error"):
+		return target
+	var current := project()
 	if image.get_size() != current.size:
 		var sized := Image.create_empty(current.size.x, current.size.y, false, Image.FORMAT_RGBA8)
 		sized.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
@@ -329,6 +338,35 @@ func new_project(width: int, height: int, project_name: String) -> Dictionary:
 	var tabs: TabBar = api.general.get_global().tabs
 	tabs.current_tab = tabs.get_tab_count() - 1
 	return project_info()
+
+
+## The current selection as a project-sized LA8 mask (opaque white = selected, so
+## get_used_rect() gives its bounds), or null when nothing is selected. Honors the selection offset and tile mode like Pixelorama's own tools.
+func selection_mask() -> Image:
+	var current := project()
+	if not current.has_selection:
+		return null
+	var mask := Image.create_empty(current.size.x, current.size.y, false, Image.FORMAT_LA8)
+	for y in current.size.y:
+		for x in current.size.x:
+			if current.can_pixel_get_drawn(Vector2i(x, y)):
+				mask.set_pixel(x, y, Color.WHITE)
+	return mask
+
+
+## Replaces the selection with [param rect] (one undo step).
+func select_rect(rect: Rect2i) -> Dictionary:
+	var area := rect.intersection(Rect2i(Vector2i.ZERO, project().size))
+	if area.size.x <= 0 or area.size.y <= 0:
+		return {"error": "the rectangle is outside the canvas"}
+	api.selection.clear_selection()
+	api.selection.select_rect(area)
+	return {"x": area.position.x, "y": area.position.y, "width": area.size.x, "height": area.size.y}
+
+
+func clear_selection() -> Dictionary:
+	api.selection.clear_selection()
+	return {"cleared": true}
 
 
 func undo() -> Dictionary:

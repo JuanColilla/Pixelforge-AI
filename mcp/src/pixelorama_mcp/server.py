@@ -24,6 +24,10 @@ VIEW_TARGET_SIDE = 512
 
 Engine = Literal["comfyui", "grok", "pixellab", "claude_pixels"]
 Target = Literal["new_layer", "current_cel", "new_frame"]
+EditTarget = Annotated[
+    Target,
+    Field(description="current_cel edits in place; new_layer/new_frame put the result in a new cel."),
+]
 Frame = Annotated[int, Field(description="Frame index from 0; -1 means the current frame.")]
 Layer = Annotated[int, Field(description="Layer index from 0 (bottom); -1 means the current layer.")]
 ColorText = Annotated[str, Field(description='Hex color "#rrggbb" or "#rrggbbaa", or a color name.')]
@@ -36,7 +40,8 @@ mcp = MCPServer(
         "paint_grid is the fastest way to draw a sprite: a palette plus rows of base62 palette "
         "indices ('.' leaves a pixel untouched). Use batch to send many drawing ops at once: one "
         "call, one undo step. generate_image creates whole sprites with an image model, can return "
-        "several variants, and includes a preview image in its result."
+        "several variants, and includes a preview image in its result. edit_image reworks existing "
+        "pixels (img2img) and inpaint regenerates only a masked area, both locally with ComfyUI."
     ),
 )
 
@@ -327,6 +332,96 @@ async def generate_image(
     if preview:
         content.append(Image(data=base64.b64decode(preview), format="png"))
     return content
+
+
+@mcp.tool()
+async def select_rect(x: int, y: int, width: int, height: int) -> dict[str, Any]:
+    """Replace Pixelorama's selection with a rectangle (clipped to the canvas)."""
+    return await call("select_rect", {"x": x, "y": y, "width": width, "height": height})
+
+
+@mcp.tool()
+async def clear_selection() -> dict[str, Any]:
+    """Remove the selection."""
+    return await call("clear_selection")
+
+
+def edit_params(
+    prompt: str, strength: float, x: int, y: int, width: int, height: int, keep_palette: bool,
+    colors: int, use_palette: bool, remove_background: bool | None, target: str, seed: int,
+    frame: int, layer: int,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "prompt": prompt, "engine": "comfyui", "strength": strength, "x": x, "y": y, "width": width,
+        "height": height, "keep_palette": keep_palette, "colors": colors, "use_palette": use_palette,
+        "target": target, "seed": seed, "frame": frame, "layer": layer,
+    }
+    if remove_background is not None:
+        params["remove_background"] = remove_background
+    return params
+
+
+KeepPalette = Annotated[
+    bool, Field(description="Quantize to the source cel's own colors (when it has at most 64).")
+]
+RemoveBackground = Annotated[
+    bool | None,
+    Field(description="Clear the flat background around the result; null decides from the source's transparency."),
+]
+
+
+@mcp.tool()
+async def edit_image(
+    prompt: Annotated[str, Field(description="What the edited pixels should look like.")],
+    strength: Annotated[
+        float, Field(ge=0.05, le=1.0, description="0.3 refines details, 0.6 restyles, 0.85 repaints colors keeping the "
+                                                "shapes, 1.0 ignores the original.")
+    ] = 0.6,
+    x: int = 0,
+    y: int = 0,
+    width: Annotated[int, Field(description="Region to edit; 0 uses the selection bounds or the whole cel.")] = 0,
+    height: Annotated[int, Field(description="Region to edit; 0 uses the selection bounds or the whole cel.")] = 0,
+    keep_palette: KeepPalette = True,
+    colors: Annotated[int, Field(description="Max colors when the palette is not kept; 0 keeps all.")] = 16,
+    use_palette: Annotated[bool, Field(description="Quantize to the active Pixelorama palette.")] = False,
+    remove_background: RemoveBackground = None,
+    target: EditTarget = "current_cel",
+    seed: Annotated[int, Field(description="-1 picks a random seed.")] = -1,
+    frame: Frame = -1,
+    layer: Layer = -1,
+) -> dict[str, Any]:
+    """Image-to-image on existing pixel art with local ComfyUI (free): the cel region is
+    upscaled, partially re-noised and redrawn following the prompt, then pixelized back to the
+    same size and palette. With a selection, only selected pixels change."""
+    params = edit_params(prompt, strength, x, y, width, height, keep_palette, colors, use_palette,
+                         remove_background, target, seed, frame, layer)
+    return await call("edit_image", params, timeout=GENERATION_TIMEOUT_SEC)
+
+
+@mcp.tool()
+async def inpaint(
+    prompt: Annotated[str, Field(description="What to paint inside the masked area.")],
+    x: int = 0,
+    y: int = 0,
+    width: Annotated[int, Field(description="Mask rectangle; 0 uses Pixelorama's current selection.")] = 0,
+    height: Annotated[int, Field(description="Mask rectangle; 0 uses Pixelorama's current selection.")] = 0,
+    strength: Annotated[
+        float, Field(ge=0.05, le=1.0, description="1.0 repaints the area from scratch; lower keeps more of it.")
+    ] = 1.0,
+    keep_palette: KeepPalette = True,
+    colors: Annotated[int, Field(description="Max colors when the palette is not kept; 0 keeps all.")] = 16,
+    use_palette: Annotated[bool, Field(description="Quantize to the active Pixelorama palette.")] = False,
+    remove_background: RemoveBackground = None,
+    target: EditTarget = "current_cel",
+    seed: Annotated[int, Field(description="-1 picks a random seed.")] = -1,
+    frame: Frame = -1,
+    layer: Layer = -1,
+) -> dict[str, Any]:
+    """Regenerate only the masked pixels of a cel with local ComfyUI (free), using the rest of
+    the cel as context. The mask is the rectangle given, else the current selection."""
+    params = edit_params(prompt, strength, x, y, width, height, keep_palette, colors, use_palette,
+                         remove_background, target, seed, frame, layer)
+    return await call("inpaint", params, timeout=GENERATION_TIMEOUT_SEC)
 
 
 def main() -> None:

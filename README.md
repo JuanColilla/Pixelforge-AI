@@ -5,6 +5,9 @@ An AI-assisted pixel-art editor. Pixelforge AI runs [Pixelorama](https://github.
 
 - generates sprites from a prompt with the engine you choose, pixelizes them to your canvas and
   places them on a new layer, cel or frame, with undo;
+- edits existing pixel art locally with ComfyUI: **Edit image** (img2img on the cel or the
+  selection, with a strength slider) and **Inpaint selection** (repaints only the selected
+  pixels), keeping the cel's own palette if you want;
 - lets AI assistants (Claude Code, Claude Desktop, Grok CLI or any MCP client) see and draw on
   the canvas through a local MCP server.
 
@@ -92,7 +95,8 @@ Config), using absolute paths, then restart Claude Desktop:
 Tools: `get_project_info`, `view_canvas`, `read_pixels`, `paint_grid`, `draw_pixels`,
 `draw_line`, `draw_rect`, `fill`, `clear_cel`, `batch` (many ops in one call and one undo
 step), `add_layer`, `add_frame`, `select_cel`, `new_project`, `undo`, `redo` and
-`generate_image` (returns a preview image of every variant).
+`generate_image` (returns a preview image of every variant), `edit_image` (img2img),
+`inpaint`, `select_rect` and `clear_selection`.
 
 Tip: keep the Pixelorama window visible next to your chat. macOS does not repaint a fully
 covered window, although the changes still apply.

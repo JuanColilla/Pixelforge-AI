@@ -20,3 +20,8 @@
 - Pixelorama on native Metal (`--rendering-method mobile --rendering-driver metal`) starts
   without errors on Godot 4.7; effect shaders and large-canvas performance still need a visual
   comparison before switching the default renderer.
+- `CanvasOps.selection_mask` calls `can_pixel_get_drawn` for every canvas pixel on the main
+  thread: instant up to 256², noticeable at 1024², a stall at 4096². Shortcut: copy
+  `selection_map` when `selection_offset` is zero, the sizes match and tile mode is off.
+- Edit modes: the strength curve and the inpaint context crop were calibrated on a single 64×64
+  sprite; large opaque scenes and tiles are untested.

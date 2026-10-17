@@ -9,7 +9,7 @@ static func request(
 	url: String,
 	method := HTTPClient.METHOD_GET,
 	headers := PackedStringArray(),
-	body := "",
+	body: Variant = "",
 	timeout := 60.0
 ) -> Dictionary:
 	var http := HTTPRequest.new()
@@ -17,7 +17,11 @@ static func request(
 	http.use_threads = true
 	http.body_size_limit = BODY_LIMIT
 	host.add_child(http)
-	var error := http.request(url, headers, method, body)
+	var error: Error
+	if body is PackedByteArray:
+		error = http.request_raw(url, headers, method, body)
+	else:
+		error = http.request(url, headers, method, str(body))
 	if error != OK:
 		http.queue_free()
 		return {"error": "could not start request to %s (%s)" % [url, error_string(error)]}
@@ -27,6 +31,31 @@ static func request(
 	if result != HTTPRequest.RESULT_SUCCESS:
 		return {"error": "request to %s failed (%s)" % [url, _result_text(result)]}
 	return {"code": response[1], "body": response[3]}
+
+
+## Builds a multipart/form-data body. [param files] maps field → {"filename", "type", "bytes"}.
+## Returns the body and the matching Content-Type header.
+static func multipart(fields: Dictionary, files: Dictionary) -> Dictionary:
+	var boundary := "----aistudio" + Crypto.new().generate_random_bytes(12).hex_encode()
+	var body := PackedByteArray()
+	for field: String in fields:
+		body.append_array(
+			("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n" % [boundary, field, fields[field]])
+			.to_utf8_buffer()
+		)
+	for field: String in files:
+		var file: Dictionary = files[field]
+		body.append_array(
+			(
+				"--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n"
+				% [boundary, field, file.filename, file.type]
+			)
+			.to_utf8_buffer()
+		)
+		body.append_array(file.bytes)
+		body.append_array("\r\n".to_utf8_buffer())
+	body.append_array(("--%s--\r\n" % boundary).to_utf8_buffer())
+	return {"body": body, "content_type": "Content-Type: multipart/form-data; boundary=" + boundary}
 
 
 static func json(response: Dictionary) -> Variant:

@@ -51,6 +51,18 @@ const ES := {
 	"Generating with %s…": "Generando con %s…",
 	"Done in %s s": "Hecho en %s s",
 	"Error: %s": "Error: %s",
+	"Mode": "Modo",
+	"Text to image": "Texto a imagen",
+	"Edit image": "Editar imagen",
+	"Inpaint selection": "Rellenar selección",
+	"Edit image and Inpaint start from the current cel and run on ComfyUI":
+	"Editar imagen y Rellenar parten del cel actual y usan ComfyUI",
+	"Strength": "Fuerza",
+	"How much the pixels may change: 0.3 refines details, 0.6 restyles, 0.85 repaints colors, 1 ignores the original":
+	"Cuánto pueden cambiar los píxeles: 0,3 pule detalles, 0,6 cambia el estilo, 0,85 repinta los colores, 1 ignora el original",
+	"Keep the cel's colors": "Conservar los colores del cel",
+	"Quantize the result to the colors already in the cel":
+	"Cuantizar el resultado a los colores que ya tiene el cel",
 }
 
 
