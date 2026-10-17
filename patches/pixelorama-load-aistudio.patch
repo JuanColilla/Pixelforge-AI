@@ -1,0 +1,14 @@
+diff --git a/src/HandleExtensions.gd b/src/HandleExtensions.gd
+index e6efdab..7e9d3fe 100644
+--- a/src/HandleExtensions.gd
++++ b/src/HandleExtensions.gd
+@@ -91,7 +91,8 @@ func _ready() -> void:
+ ## For example:
+ ## [code]_load_extension("ExtensionName", true)[/code]
+ func _add_internal_extensions() -> void:
+-	pass
++	if DirAccess.dir_exists_absolute("res://src/Extensions/AIStudio"):
++		_load_extension("AIStudio", true)
+ 
+ 
+ func install_extension(path: String) -> void:

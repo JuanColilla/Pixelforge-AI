@@ -1,0 +1,11 @@
+# Upstream Pixelorama checkout, recreated by scripts/setup.sh
+/Pixelorama/
+
+# Build output
+/dist/
+
+# Python
+__pycache__/
+.venv/
+
+.DS_Store

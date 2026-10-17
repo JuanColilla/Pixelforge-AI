@@ -1,0 +1,262 @@
+"""MCP server that lets an assistant draw pixel art in a running Pixelorama.
+
+It is a thin translator: every tool becomes one JSON-lines request to the AI Studio
+extension's bridge on 127.0.0.1, authenticated with the token in bridge.json.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel, Field
+
+GENERATION_TIMEOUT_SEC = 900
+DEFAULT_TIMEOUT_SEC = 30
+VIEW_TARGET_SIDE = 512
+
+Engine = Literal["comfyui", "grok", "pixellab", "claude_pixels"]
+Target = Literal["new_layer", "current_cel", "new_frame"]
+Frame = Annotated[int, Field(description="Frame index from 0; -1 means the current frame.")]
+Layer = Annotated[int, Field(description="Layer index from 0 (bottom); -1 means the current layer.")]
+ColorText = Annotated[str, Field(description='Hex color "#rrggbb" or "#rrggbbaa", or a color name.')]
+
+mcp = MCPServer(
+    name="pixelorama",
+    instructions=(
+        "Draw pixel art in the user's running Pixelorama editor. Coordinates are pixels with "
+        "(0,0) at the top-left. Call get_project_info first, then view_canvas to see the work. "
+        "paint_grid is the fastest way to draw a sprite: a palette plus rows of base62 palette "
+        "indices ('.' leaves a pixel untouched). Every drawing call is one undo step. "
+        "generate_image creates a whole sprite with an image model and pixelizes it to the canvas."
+    ),
+)
+
+
+class Pixel(BaseModel):
+    x: int
+    y: int
+    color: ColorText
+
+
+def bridge_file() -> Path:
+    override = os.environ.get("PIXELORAMA_BRIDGE_FILE")
+    if override:
+        return Path(override)
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "pixelorama" / "ai_studio" / "bridge.json"
+
+
+async def call(method: str, params: dict[str, Any] | None = None, timeout: float = DEFAULT_TIMEOUT_SEC) -> dict[str, Any]:
+    path = bridge_file()
+    try:
+        info = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise ToolError(
+            f"Pixelorama with the AI Studio extension is not running (no bridge file at {path})."
+        ) from None
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(info["host"], info["port"]), 5)
+    except (OSError, asyncio.TimeoutError) as error:
+        raise ToolError(f"Cannot reach the Pixelorama bridge on port {info['port']}: {error}") from None
+    try:
+        request = {"id": 1, "token": info["token"], "method": method, "params": params or {}}
+        writer.write((json.dumps(request) + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout)
+    except asyncio.TimeoutError:
+        raise ToolError(f"Pixelorama did not answer '{method}' within {timeout:.0f} s") from None
+    finally:
+        writer.close()
+    if not line:
+        raise ToolError("Pixelorama closed the connection")
+    response = json.loads(line)
+    if "error" in response:
+        raise ToolError(response["error"])
+    return response["result"]
+
+
+@mcp.tool()
+async def get_project_info() -> dict[str, Any]:
+    """Canvas size, frames, layers (index, name, type, visibility), current cel and active palette."""
+    return await call("get_project_info")
+
+
+@mcp.tool()
+async def view_canvas(
+    frame: Frame = -1,
+    layer: Annotated[int, Field(description="Layer index, or -1 for all visible layers blended.")] = -1,
+    scale: Annotated[int, Field(description="Integer zoom; 0 picks one that makes the image ~512px.")] = 0,
+) -> Image:
+    """Render the canvas (or one layer) as a PNG so you can look at the artwork."""
+    if scale <= 0:
+        info = await call("get_project_info")
+        scale = max(1, VIEW_TARGET_SIDE // max(info["width"], info["height"]))
+    result = await call("view_canvas", {"frame": frame, "layer": layer, "scale": scale})
+    return Image(data=base64.b64decode(result["png_base64"]), format="png")
+
+
+@mcp.tool()
+async def read_pixels(
+    x: int = 0,
+    y: int = 0,
+    width: Annotated[int, Field(description="0 reads the whole canvas.")] = 0,
+    height: Annotated[int, Field(description="0 reads the whole canvas.")] = 0,
+    frame: Frame = -1,
+    layer: Layer = -1,
+) -> dict[str, Any]:
+    """Exact pixels of a region as a palette plus base62 index rows (max 62 colors per region)."""
+    return await call(
+        "read_pixels", {"x": x, "y": y, "width": width, "height": height, "frame": frame, "layer": layer}
+    )
+
+
+@mcp.tool()
+async def paint_grid(
+    palette: Annotated[list[ColorText], Field(description="Up to 62 colors; position = index.")],
+    rows: Annotated[
+        list[str],
+        Field(description="One string per row; each char is a base62 palette index (0-9a-zA-Z), '.' skips."),
+    ],
+    x: Annotated[int, Field(description="Left edge of the grid on the canvas.")] = 0,
+    y: Annotated[int, Field(description="Top edge of the grid on the canvas.")] = 0,
+    frame: Frame = -1,
+    layer: Layer = -1,
+) -> dict[str, Any]:
+    """Paint a block of pixels from a palette and index rows. Use '#00000000' to erase."""
+    return await call(
+        "paint_grid", {"palette": palette, "rows": rows, "x": x, "y": y, "frame": frame, "layer": layer}
+    )
+
+
+@mcp.tool()
+async def draw_pixels(pixels: list[Pixel], frame: Frame = -1, layer: Layer = -1) -> dict[str, Any]:
+    """Set individual pixels; best for small touch-ups."""
+    return await call(
+        "draw_pixels", {"pixels": [p.model_dump() for p in pixels], "frame": frame, "layer": layer}
+    )
+
+
+@mcp.tool()
+async def draw_line(
+    x0: int, y0: int, x1: int, y1: int, color: ColorText, frame: Frame = -1, layer: Layer = -1
+) -> dict[str, Any]:
+    """Draw a 1px pixel-perfect line (Bresenham)."""
+    return await call(
+        "draw_line", {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "color": color, "frame": frame, "layer": layer}
+    )
+
+
+@mcp.tool()
+async def draw_rect(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    color: ColorText,
+    filled: bool = True,
+    frame: Frame = -1,
+    layer: Layer = -1,
+) -> dict[str, Any]:
+    """Draw a filled or 1px-outlined rectangle."""
+    return await call(
+        "draw_rect",
+        {"x": x, "y": y, "width": width, "height": height, "color": color, "filled": filled,
+         "frame": frame, "layer": layer},
+    )
+
+
+@mcp.tool()
+async def fill(x: int, y: int, color: ColorText, frame: Frame = -1, layer: Layer = -1) -> dict[str, Any]:
+    """Bucket fill: replace the contiguous area of the exact color at (x, y)."""
+    return await call("fill", {"x": x, "y": y, "color": color, "frame": frame, "layer": layer})
+
+
+@mcp.tool()
+async def clear_cel(frame: Frame = -1, layer: Layer = -1) -> dict[str, Any]:
+    """Erase every pixel of one cel."""
+    return await call("clear_cel", {"frame": frame, "layer": layer})
+
+
+@mcp.tool()
+async def add_layer(name: str = "Layer") -> dict[str, Any]:
+    """Add a pixel layer above the current one and make it current."""
+    return await call("add_layer", {"name": name})
+
+
+@mcp.tool()
+async def add_frame(after: Annotated[int, Field(description="-1 means after the current frame.")] = -1) -> dict[str, Any]:
+    """Add an animation frame."""
+    return await call("add_frame", {"after": after})
+
+
+@mcp.tool()
+async def select_cel(frame: Frame = -1, layer: Layer = -1) -> dict[str, Any]:
+    """Make a frame/layer the current cel (where calls with -1 draw)."""
+    return await call("select_cel", {"frame": frame, "layer": layer})
+
+
+@mcp.tool()
+async def new_project(width: int = 64, height: int = 64, name: str = "untitled") -> dict[str, Any]:
+    """Open a new empty project in a new tab."""
+    return await call("new_project", {"width": width, "height": height, "name": name})
+
+
+@mcp.tool()
+async def undo() -> dict[str, Any]:
+    """Undo the last action in Pixelorama."""
+    return await call("undo")
+
+
+@mcp.tool()
+async def redo() -> dict[str, Any]:
+    """Redo the last undone action."""
+    return await call("redo")
+
+
+@mcp.tool()
+async def generate_image(
+    prompt: str,
+    engine: Annotated[
+        Engine,
+        Field(description="comfyui runs locally (free); grok and pixellab are remote and cost credits; "
+                          "claude_pixels draws small sprites (<=128px) as data."),
+    ] = "comfyui",
+    width: Annotated[int, Field(description="0 uses the canvas width.")] = 0,
+    height: Annotated[int, Field(description="0 uses the canvas height.")] = 0,
+    colors: Annotated[int, Field(description="Max colors after quantization; 0 keeps all.")] = 16,
+    use_palette: Annotated[bool, Field(description="Quantize to the active Pixelorama palette.")] = False,
+    remove_background: bool = True,
+    target: Target = "new_layer",
+    seed: Annotated[int, Field(description="-1 picks a random seed.")] = -1,
+) -> dict[str, Any]:
+    """Generate a sprite with an image engine, pixelize it to the canvas and place it."""
+    params: dict[str, Any] = {
+        "prompt": prompt, "engine": engine, "colors": colors, "use_palette": use_palette,
+        "remove_background": remove_background, "target": target, "seed": seed,
+    }
+    if width > 0:
+        params["width"] = width
+    if height > 0:
+        params["height"] = height
+    return await call("generate", params, timeout=GENERATION_TIMEOUT_SEC)
+
+
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
