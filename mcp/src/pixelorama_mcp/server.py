@@ -310,7 +310,10 @@ async def generate_image(
     """Generate sprites with an image engine, pixelize them to the canvas and place them.
 
     Returns the placement details plus a preview image of every variant side by side, so no
-    extra view_canvas call is needed to judge the result.
+    extra view_canvas call is needed to judge the result. Each variant's `background` says how
+    its background was removed: `flood_fill` (flat background), `vision` (Apple Vision subject
+    lifting, used when the background is not flat), `source_alpha` (the engine returned
+    transparency) or `none`.
     """
     params: dict[str, Any] = {
         "prompt": prompt, "engine": engine, "colors": colors, "use_palette": use_palette,

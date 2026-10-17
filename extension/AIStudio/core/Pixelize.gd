@@ -5,17 +5,31 @@ extends RefCounted
 const LUMA := Vector3(0.299, 0.587, 0.114)
 const MAX_TRAINING_SAMPLES := 4096
 const TRANSPARENT := Color(0, 0, 0, 0)
+## Share of the subject mask's background that must differ from the border color before the
+## Vision mask replaces flood fill. Measured: flat backgrounds stay under 0.07, gradient and
+## scenic backdrops reach 0.33–0.46 (see knowledge/architecture.md).
+const VISION_MIN_NON_FLAT := 0.15
+const ANALYSIS_SIZE := 128
 
 
-static func to_pixel_art(source: Image, size: Vector2i, options: Dictionary) -> Image:
-	var image := Image.new()
-	image.copy_from(source)
-	if image.is_compressed():
-		image.decompress()
-	image.convert(Image.FORMAT_RGBA8)
-	image = fit(image, size)
+## Returns {"image": Image, "background": "none" | "flood_fill" | "vision"}.
+## [param options] may carry "subject": the source with Vision's foreground mask as alpha.
+static func to_pixel_art(source: Image, size: Vector2i, options: Dictionary) -> Dictionary:
+	var image := _rgba8(source)
+	var background := "none"
+	var tolerance := float(options.get("background_tolerance", 0.12))
 	if options.get("remove_background", false):
-		remove_border_background(image, float(options.get("background_tolerance", 0.12)))
+		background = "flood_fill"
+		var subject: Image = options.get("subject")
+		if (
+			subject != null
+			and non_flat_background_ratio(image, subject, tolerance) > VISION_MIN_NON_FLAT
+		):
+			image = _rgba8(subject)
+			background = "vision"
+	image = fit(image, size)
+	if background == "flood_fill":
+		remove_border_background(image, tolerance)
 	binarize_alpha(image)
 	var palette: PackedColorArray = options.get("palette", PackedColorArray())
 	var max_colors := int(options.get("colors", 0))
@@ -23,7 +37,46 @@ static func to_pixel_art(source: Image, size: Vector2i, options: Dictionary) -> 
 		map_to_palette(image, palette)
 	elif max_colors > 0:
 		map_to_palette(image, kmeans_palette(image, max_colors))
-	return image
+	return {"image": image, "background": background}
+
+
+## Among the pixels Vision calls background, the share that is not the border color. Flood
+## fill is exact on flat backgrounds and keeps subject parts that share the background color
+## (Vision drops those), so Vision only wins when the background is not flat. Measured at a
+## fixed resolution so the decision does not depend on the canvas size.
+static func non_flat_background_ratio(source: Image, subject: Image, tolerance: float) -> float:
+	var scale := minf(1.0, float(ANALYSIS_SIZE) / maxi(source.get_width(), source.get_height()))
+	var size := Vector2i(
+		maxi(1, roundi(source.get_width() * scale)), maxi(1, roundi(source.get_height() * scale))
+	)
+	var image := _rgba8(source)
+	image.resize(size.x, size.y, Image.INTERPOLATE_LANCZOS)
+	var mask := _rgba8(subject)
+	mask.resize(size.x, size.y, Image.INTERPOLATE_LANCZOS)
+	var background := dominant_border_color(image)
+	if background.a == 0.0:
+		return 1.0
+	# Vision's mask edge often trims outlines; those pixels must not read as a busy background.
+	var near_subject := PackedByteArray()
+	near_subject.resize(size.x * size.y)
+	for y in size.y:
+		for x in size.x:
+			if mask.get_pixel(x, y).a < 0.5:
+				continue
+			for ny in range(maxi(y - 1, 0), mini(y + 2, size.y)):
+				for nx in range(maxi(x - 1, 0), mini(x + 2, size.x)):
+					near_subject[ny * size.x + nx] = 1
+	var total := 0
+	var differing := 0
+	for y in size.y:
+		for x in size.x:
+			var color := image.get_pixel(x, y)
+			if near_subject[y * size.x + x] or color.a < 0.5:
+				continue
+			total += 1
+			if color_distance(color, background) > tolerance:
+				differing += 1
+	return 0.0 if total == 0 else float(differing) / total
 
 
 ## Scales [param image] to fit inside [param size] keeping its aspect ratio, centered on a
@@ -176,6 +229,15 @@ static func map_to_palette(image: Image, palette: PackedColorArray) -> void:
 			if not cache.has(key):
 				cache[key] = _nearest_color(opaque, color)
 			image.set_pixel(x, y, cache[key])
+
+
+static func _rgba8(source: Image) -> Image:
+	var image := Image.new()
+	image.copy_from(source)
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	return image
 
 
 static func color_distance(a: Color, b: Color) -> float:

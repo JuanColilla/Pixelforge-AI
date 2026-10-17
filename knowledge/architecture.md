@@ -8,6 +8,8 @@ AI Studio panel ─┐                         ┌─ ComfyUIProvider ── HTT
 MCP ─ Bridge ────┘        │                ├─ PixelLabProvider ─ HTTPS ── api.pixellab.ai/v2
                           │                └─ ClaudeProvider ─── ProcessRunner ── claude -p
                           ▼
+          SubjectMask ── ProcessRunner ── tools/subject-mask (Vision, Neural Engine)
+                          ▼
                    Pixelize.to_pixel_art ──► CanvasOps.write_cel ──► set_pixelcel_image (undo)
 ```
 
@@ -20,10 +22,11 @@ talks to the bridge and draws with the same `CanvasOps`. That is why `Generator`
 | File | Responsibility |
 |---|---|
 | `Main.gd` | Wires everything, registers the translation and the dock tab; tears it all down when disabled. |
-| `core/Settings.gd` | `user://ai_studio/settings.cfg`; resolves executables and the MCP folder by following the dev symlink. |
+| `core/Settings.gd` | `user://ai_studio/settings.cfg`; resolves executables, the MCP folder and the `subject-mask` helper by following the dev symlink to the repo. |
 | `core/CanvasOps.gd` | Canvas reads/writes, layers, frames, undo. The only write path. |
 | `core/PixelGrid.gd` | Text format: hex palette + base62 index rows (`.` = leave untouched). |
-| `core/Pixelize.gd` | Fit, border flood-fill background removal, hard alpha, k-means / palette mapping. |
+| `core/Pixelize.gd` | Fit, background removal (border flood fill or Vision mask, chosen per image), hard alpha, k-means / palette mapping. |
+| `core/SubjectMask.gd` | Runs `subject-mask` on the full-resolution render and returns the cut-out with alpha. |
 | `core/Generator.gd` | Normalizes requests, picks the engine, pixelizes, places results, variants. |
 | `core/Http.gd` | Awaitable `HTTPRequest`; decodes PNG/JPEG/WebP by signature. |
 | `core/Translations.gd` | Spanish strings for `tr()`. |
@@ -31,6 +34,7 @@ talks to the bridge and draws with the same `CanvasOps`. That is why `Generator`
 | `providers/ProcessRunner.gd` | `/bin/sh -c exec …` with output to files, PID polling, kill on cancel/timeout. |
 | `bridge/BridgeServer.gd` | Token-protected JSON-lines TCP server. |
 | `ui/StudioPanel.gd` | Dock tab, built in code. |
+| `tools/subject-mask/` | Swift package (macOS 14+): `VNGenerateForegroundInstanceMaskRequest` → PNG with the mask as alpha. Built by `scripts/setup.sh`. |
 
 ## Bridge protocol
 
@@ -73,9 +77,67 @@ layers.
   sprite takes about 17 s with `sonnet`.
 - **Claude, agent**: temporary `--mcp-config` + `--allowedTools mcp__pixelorama`.
 
+## Background removal
+
+With "Remove background" on and a render without alpha of its own (otherwise `source_alpha`):
+
+1. `Generator._generate_image` (once per variant) hands the render, at the engine's resolution
+   (512 px for sprites up to 128 px, up to 1024 px), to `SubjectMask`. It saves it under
+   `user://ai_studio/jobs/mask-*/` and runs `subject-mask source.png masked.png` (60 s
+   timeout). The helper pins the request's `main` compute stage to the Neural Engine when
+   Vision supports it there, and writes the source with the mask of all foreground instances
+   as alpha, uncropped and at full resolution. Exit codes: `0` plus one JSON line (`device`,
+   `instances`, `vision_ms`, `total_ms`), `2` no subject, `1` error, `64` usage.
+   `fix_alpha_edges()` runs before downscaling: Vision clears the background to transparent
+   black, and Lanczos would bleed it into the outline.
+2. `Pixelize.non_flat_background_ratio` measures, at 128 px and skipping the pixel ring next to
+   the subject, how much of what Vision calls background is **not** the dominant border color.
+   - ≤ 0.15 (`VISION_MIN_NON_FLAT`): flat background → border flood fill, as before. It is
+     exact and keeps subject areas that share the background color (a white chest on a white
+     background), which Vision drops.
+   - > 0.15: gradient or scenic background → the Vision mask is used.
+3. If the helper is missing or fails, flood fill runs and the result carries
+   `background_note`. Cancelling during the cut-out cancels the whole generation.
+
+Each variant in the `generate` result has `background`: `flood_fill`, `vision`,
+`source_alpha` or `none` (the top level repeats the first variant's).
+
+Measured on an Apple M5 Max (macOS 27) with 1024² Z-Image Turbo renders. The ratio is measured
+at 128 px, so it does not depend on the render size:
+
+| Sample | Background | Non-flat ratio | Result |
+|---|---|---|---|
+| Sitting fox | flat white | 0.065 | `flood_fill` |
+| Knight with sword | flat white + shadow | 0.004 | `flood_fill` |
+| Wizard before a gradient disc | sunset gradient | 0.326 | `vision` |
+| Deer in a clearing | forest and grass | 0.462 | `vision` |
+
+| Device (`--device`) | Vision | Whole process (incl. PNG) |
+|---|---|---|
+| `ane` (default) | 136–157 ms | 155–176 ms |
+| `auto` (Vision decides) | 131–143 ms | 148–160 ms |
+| `gpu` | 194–279 ms | 229–315 ms (with ComfyUI busy on the GPU) |
+| `cpu` | not supported for the `main` stage; falls back to `auto` | — |
+
+At 512 px renders the helper takes 117–139 ms of Vision and 129–150 ms overall; the ratio and
+the rest of `Pixelize` add 20–30 ms of GDScript. Bridge generations took 4.3–5.3 s per sprite,
+so the cut-out is about 3% of the total. The first run in a session took 230 ms of Vision.
+
+Comparison at 64×64 and 16 colors in
+[assets/background-removal-comparison.png](assets/background-removal-comparison.png); columns:
+source · flood fill · Vision only · what `Pixelize` picks.
+
 ## Known limitations
 
 - On macOS, Pixelorama only repaints while its window is visible. To watch Claude draw, keep
   the window visible next to your chat.
 - `dist/AIStudio.zip` has not been tested against an official Pixelorama build.
 - Engine errors are shown in English.
+- With the Vision mask, thin outlines can lose a pixel (the mask edge falls mid-outline). If
+  that matters, dilate the mask in the helper (`generateScaledMaskForImage` +
+  `CIMorphologyMaximum`).
+- Flat backgrounds keep the flood-fill behavior, including a drop shadow under the feet.
+- Vision decides what is foreground: prominent scenery (trees next to a deer) can stay in the
+  subject as one instance. Far less background remains than with flood fill.
+- On small renders Vision sometimes finds no subject (the fox at 512 px, exit `2`); flood fill
+  runs and `background_note` says so.

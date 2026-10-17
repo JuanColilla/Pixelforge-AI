@@ -19,6 +19,7 @@ const DEFAULTS := {
 	"claude_model": "sonnet",
 	"uv_path": "",
 	"mcp_dir": "",
+	"subject_mask_path": "",
 	"bridge_enabled": true,
 	"bridge_port": 47821,
 	"generation_timeout_sec": 600,
@@ -79,12 +80,33 @@ func resolve_executable(key: String, names: PackedStringArray) -> String:
 	return ""
 
 
-## The MCP server lives next to the extension sources in the repository. In development the
-## extension folder is a symlink into the repo, so the repo root is found by following it.
+## The MCP server lives next to the extension sources in the repository.
 func resolve_mcp_dir() -> String:
 	var configured := str(get_value("mcp_dir"))
 	if not configured.is_empty():
 		return configured
+	var root := repo_root()
+	if root.is_empty():
+		return ""
+	var candidate := root.path_join("mcp")
+	return candidate if DirAccess.dir_exists_absolute(candidate) else ""
+
+
+## The Vision helper is built by scripts/setup.sh inside the repository's tools folder.
+func resolve_subject_mask() -> String:
+	var configured := str(get_value("subject_mask_path"))
+	if not configured.is_empty():
+		return configured
+	var root := repo_root()
+	if root.is_empty():
+		return ""
+	var candidate := root.path_join("tools/subject-mask/.build/release/subject-mask")
+	return candidate if FileAccess.file_exists(candidate) else ""
+
+
+## In development the extension folder is a symlink into the repo, so the repo root is found
+## by following it. Packaged installs have no symlink and return "".
+func repo_root() -> String:
 	var extension_dir := ProjectSettings.globalize_path(EXTENSION_RES_DIR)
 	var parent := extension_dir.get_base_dir()
 	var dir := DirAccess.open(parent)
@@ -93,8 +115,7 @@ func resolve_mcp_dir() -> String:
 	var target := dir.read_link(extension_dir.get_file())
 	if target.is_relative_path():
 		target = parent.path_join(target).simplify_path()
-	var candidate := target.get_base_dir().get_base_dir().path_join("mcp")
-	return candidate if DirAccess.dir_exists_absolute(candidate) else ""
+	return target.get_base_dir().get_base_dir()
 
 
 func job_dir(prefix: String) -> String:

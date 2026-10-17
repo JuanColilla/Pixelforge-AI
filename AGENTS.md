@@ -14,13 +14,16 @@ canvas to assistants through MCP. It talks only to public APIs; no third-party p
 - Godot `4.7.x`.
 - GDScript extension in `extension/AIStudio/`, symlinked to `Pixelorama/src/Extensions/AIStudio`.
 - MCP server in Python ≥ 3.11 with `mcp` 2.x (`MCPServer`, not the v1 `FastMCP`), run with `uv`.
+- Swift helper `tools/subject-mask/` (macOS 14+, Vision `VNGenerateForegroundInstanceMaskRequest`
+  on the Neural Engine) for non-flat backgrounds; without it background removal uses flood fill.
 - Engines: ComfyUI (local, Z-Image Turbo by default), Grok CLI (`image_gen`), PixelLab API v2,
   Claude CLI (pixel mode via `--json-schema`, agent mode via MCP).
 
 ## Commands
 
 ```bash
-scripts/setup.sh          # clone + patch Pixelorama, symlink, import assets, uv sync
+scripts/setup.sh          # clone + patch Pixelorama, symlink, import assets, uv sync, subject-mask
+swift build -c release --package-path tools/subject-mask   # the Vision helper only
 scripts/run.sh            # run Pixelorama from source with the extension
 scripts/package.sh        # dist/AIStudio.zip for a stock Pixelorama build
 scripts/register-mcp.sh   # register pixelorama-mcp with Claude Code and/or Grok (user scope)

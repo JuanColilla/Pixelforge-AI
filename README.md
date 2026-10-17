@@ -22,7 +22,9 @@ ComfyUI.
 | Claude CLI: agent | Anthropic | Claude Code. Claude edits the canvas with the MCP tools to fulfil your request. |
 
 Generated images are fitted to the canvas, the background is removed and colors are quantized
-to N colors or to the active palette. You can generate up to four variants with consecutive
+to N colors or to the active palette. Flat backgrounds are flood-filled from the border; for
+gradient or scenic backgrounds a small Swift helper uses Apple's Vision subject lifting on the
+Neural Engine (macOS 14+). You can generate up to four variants with consecutive
 seeds; extra variants go to hidden layers so you can compare and keep one.
 
 ## Requirements
@@ -31,6 +33,8 @@ seeds; extra variants go to hidden layers so you can compare and keep one.
 - [Godot 4.7.x](https://godotengine.org) (`brew install --cask godot` on macOS)
 - [uv](https://docs.astral.sh/uv/) and git
 - Optional, per engine: ComfyUI, Grok CLI, Claude Code, a PixelLab API token
+- Optional: Xcode or the Swift toolchain, so `scripts/setup.sh` can build the Vision
+  background-removal helper (without it, only flat backgrounds are removed)
 
 ## Quick start
 
@@ -101,7 +105,8 @@ covered window, although the changes still apply.
 
 `scripts/package.sh` builds `dist/AIStudio.zip`, which can be installed in an official
 Pixelorama 1.2.x build from Preferences → Extensions. In that mode, set the
-`pixelorama-mcp folder` in AI Studio settings to use Claude's agent mode. This path is not
+`pixelorama-mcp folder` in AI Studio settings to use Claude's agent mode, and the
+`Subject mask helper path` for Vision background removal. This path is not
 tested yet.
 
 ## Privacy and security
@@ -120,6 +125,7 @@ extension/AIStudio/   GDScript extension (UI, engines, pixelization, bridge)
 mcp/                  pixelorama-mcp server (Python, MCP SDK 2.x)
 patches/              the one-line hook that loads the extension in Pixelorama
 scripts/              setup, run, package and MCP registration
+tools/subject-mask/   Swift helper for Vision background removal (macOS 14+)
 knowledge/            architecture notes and technical debt
 ```
 

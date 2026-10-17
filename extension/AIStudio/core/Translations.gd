@@ -41,6 +41,7 @@ const ES := {
 	"Claude model": "Modelo de Claude",
 	"uv path": "Ruta de uv",
 	"pixelorama-mcp folder": "Carpeta de pixelorama-mcp",
+	"Subject mask helper path": "Ruta del ayudante de recorte (Vision)",
 	"auto": "automático",
 	"Enable MCP bridge": "Activar el puente MCP",
 	"Bridge port": "Puerto del puente",
