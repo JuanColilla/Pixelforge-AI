@@ -13,3 +13,6 @@ __pycache__/
 # Local agent tooling
 /.claude/worktrees/
 /.claude/settings.local.json
+
+# Swift build output
+.build/

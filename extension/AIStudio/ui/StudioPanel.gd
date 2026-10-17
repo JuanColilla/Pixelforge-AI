@@ -34,6 +34,7 @@ const TEXT_SETTINGS := [
 	["claude_model", "Claude model", false],
 	["uv_path", "uv path", false],
 	["mcp_dir", "pixelorama-mcp folder", false],
+	["subject_mask_path", "Subject mask helper path", false],
 ]
 
 var settings: RefCounted

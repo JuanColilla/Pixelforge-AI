@@ -26,6 +26,7 @@ const PREVIEW_SIDE := 192
 const PREVIEW_GAP := 4
 
 const Pixelize := preload("Pixelize.gd")
+const SubjectMask := preload("SubjectMask.gd")
 const ComfyUIProvider := preload("../providers/ComfyUIProvider.gd")
 const PixelLabProvider := preload("../providers/PixelLabProvider.gd")
 const GrokProvider := preload("../providers/GrokProvider.gd")
@@ -38,6 +39,7 @@ var image_busy := false
 var agent_busy := false
 
 var _providers := {}
+var _subject_mask: RefCounted
 
 
 func setup(settings_store: RefCounted, canvas_ops: RefCounted) -> void:
@@ -50,6 +52,7 @@ func setup(settings_store: RefCounted, canvas_ops: RefCounted) -> void:
 		"claude": ClaudeProvider.new(settings, self),
 	}
 	_providers.pixellab.progress.connect(func(text: String) -> void: status_changed.emit(text, true))
+	_subject_mask = SubjectMask.new(settings, self)
 
 
 ## Fills defaults and validates a request coming from the panel or the bridge.
@@ -122,6 +125,7 @@ func is_busy() -> bool:
 func cancel() -> void:
 	for provider: RefCounted in _providers.values():
 		provider.cancel()
+	_subject_mask.cancel()
 
 
 ## Generates [code]variants[/code] images with consecutive seeds. With new_layer, only the
@@ -149,6 +153,9 @@ func _run_image(request: Dictionary) -> Dictionary:
 		if written.has("error"):
 			return written if placed.is_empty() else _summary(request, placed, images, written.error)
 		written["seed"] = variant.seed
+		for key in ["background", "background_note"]:
+			if generated.has(key):
+				written[key] = generated[key]
 		placed.append(written)
 		images.append(generated.image)
 	if request.target == "new_layer":
@@ -171,16 +178,26 @@ func _generate_image(request: Dictionary) -> Dictionary:
 			generated = await _providers.claude.generate_pixels(request)
 	if generated.has("error") or request.engine == "claude_pixels":
 		return generated
-	var image := Pixelize.to_pixel_art(
-		generated.image,
-		request.size,
-		{
-			"colors": request.colors,
-			"palette": request.palette,
-			"remove_background": request.remove_background,
-		}
-	)
-	return {"image": image}
+	var image: Image = generated.image
+	var options := {"colors": request.colors, "palette": request.palette}
+	var result := {"background": "none"}
+	if request.remove_background:
+		if image.detect_alpha() != Image.ALPHA_NONE:
+			result.background = "source_alpha"
+		else:
+			options["remove_background"] = true
+			var lifted: Dictionary = await _subject_mask.lift(image)
+			if lifted.has("cancelled"):
+				return {"error": "cancelled"}
+			if lifted.has("image"):
+				options["subject"] = lifted.image
+			else:
+				result["background_note"] = lifted.error
+	var pixelized := Pixelize.to_pixel_art(image, request.size, options)
+	result["image"] = pixelized.image
+	if options.has("remove_background"):
+		result.background = pixelized.background
+	return result
 
 
 func _summary(request: Dictionary, placed: Array[Dictionary], images: Array[Image], warning: String) -> Dictionary:

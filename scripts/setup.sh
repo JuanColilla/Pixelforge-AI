@@ -30,4 +30,12 @@ echo "Importing Pixelorama assets (first run takes a moment)…"
 godot --headless --path "$ROOT/Pixelorama" --import >/dev/null 2>&1 || true
 
 uv sync --quiet --directory "$ROOT/mcp"
+
+# Vision subject lifting for background removal; without it AI Studio falls back to flood fill.
+if command -v swift >/dev/null; then
+  swift build --quiet -c release --package-path "$ROOT/tools/subject-mask" \
+    || echo "subject-mask did not build; background removal will use flood fill"
+else
+  echo "Swift not found (install Xcode); background removal will use flood fill"
+fi
 echo "Ready. Start Pixelorama with: $ROOT/scripts/run.sh"

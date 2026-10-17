@@ -13,12 +13,14 @@
   MCP folder set by hand in the settings.
 - Grok: agent-loop overhead dominates the cost per image (~265k tokens). Restrict tools with
   `--tools` once the internal tool IDs are confirmed (`image_gen` plus the shell tool).
-- Pixelize: background removal is a border flood fill with a fixed tolerance (0.12); it fails
-  on gradient backgrounds.
+- Background removal: the `VISION_MIN_NON_FLAT` threshold (0.15) comes from four samples;
+  revisit it if noisy flat backgrounds or soft gradients land on the wrong side.
+- `subject-mask` only resolves in development (dev symlink to the repo); with
+  `dist/AIStudio.zip` set its path by hand or flood fill is used.
 - No automated GDScript tests (GUT or gdUnit). Verification today means running Pixelorama
   headless and talking to the bridge.
-- `user://ai_studio/jobs/<id>/` keeps one folder per Grok/Claude run (with stdout) and is never
-  pruned.
+- `user://ai_studio/jobs/<id>/` keeps one folder per Grok/Claude/cut-out run (with stdout;
+  cut-outs hold two renders as PNG) and is never pruned.
 - `scripts/register-mcp.sh` does not cover Claude Desktop: its config is user-curated JSON and
   is edited by hand (see README).
 - Variants with `new_frame` are inserted after the current frame, so they end up in reverse
