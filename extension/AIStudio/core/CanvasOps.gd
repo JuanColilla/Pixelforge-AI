@@ -325,7 +325,8 @@ func select_cel(frame: int, layer: int) -> Dictionary:
 func new_project(width: int, height: int, project_name: String) -> Dictionary:
 	if width < 1 or height < 1 or width > 4096 or height > 4096:
 		return {"error": "size must be between 1 and 4096"}
-	api.project.new_project([], project_name, Vector2(width, height))
+	var no_frames: Array[Frame] = []
+	api.project.new_project(no_frames, project_name, Vector2(width, height))
 	var tabs: TabBar = api.general.get_global().tabs
 	tabs.current_tab = tabs.get_tab_count() - 1
 	return project_info()
