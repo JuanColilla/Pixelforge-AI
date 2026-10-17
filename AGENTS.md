@@ -28,6 +28,10 @@ scripts/register-mcp.sh   # registra pixelorama-mcp en Claude Code / Grok (scope
 godot --headless --path Pixelorama --quit-after 300   # comprobación de carga sin ventana
 ```
 
+Claude Desktop: añadir a mano en `~/Library/Application Support/Claude/claude_desktop_config.json`
+→ `mcpServers.pixelorama` = `{"command": "<ruta absoluta de uv>", "args": ["run", "--quiet",
+"--directory", "<repo>/mcp", "pixelorama-mcp"]}` y reiniciar Claude Desktop.
+
 ## ARCHITECTURE
 
 Ver `knowledge/architecture.md`. Resumen:

@@ -12,7 +12,7 @@
   headless y hablando con el puente.
 - `user://ai_studio/jobs/<id>/` guarda una carpeta por ejecución de Grok/Claude (con stdout)
   y nunca se poda.
-- `scripts/register-mcp.sh` sin probar en ninguno de los dos destinos (sobre todo el orden de
-  argumentos de `grok mcp add … -- run …`).
+- `scripts/register-mcp.sh` no cubre Claude Desktop: su `claude_desktop_config.json` es JSON
+  curado por el usuario y se edita a mano (entrada `pixelorama` con la ruta absoluta de `uv`).
 - Las cuatro primeras imágenes de prueba quedaron en `~/ComfyUI-Shared/output/pixelorama-ai/`
   (antes del cambio a `PreviewImage`); se pueden borrar a mano.
