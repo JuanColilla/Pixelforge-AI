@@ -544,12 +544,12 @@ func _run_edit(request: Dictionary) -> Dictionary:
 	var palette: PackedColorArray = request.palette
 	if palette.is_empty() and request.keep_palette:
 		palette = Pixelize.opaque_colors(cel, MAX_SOURCE_PALETTE)
-	var image := Pixelize.to_pixel_art(
+	var pixelized := Pixelize.to_pixel_art(
 		generated.image,
 		region.size,
 		{"colors": request.colors, "palette": palette, "remove_background": request.remove_background}
 	)
-	return _place_region(image, region.position, mask, request, source)
+	return _place_region(pixelized.image, region.position, mask, request, source)
 
 
 func _run_agent(request: Dictionary) -> Dictionary:
