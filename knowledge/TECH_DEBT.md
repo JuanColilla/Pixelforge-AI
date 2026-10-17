@@ -16,3 +16,8 @@
   curado por el usuario y se edita a mano (entrada `pixelorama` con la ruta absoluta de `uv`).
 - Las cuatro primeras imágenes de prueba quedaron en `~/ComfyUI-Shared/output/pixelorama-ai/`
   (antes del cambio a `PreviewImage`); se pueden borrar a mano.
+- Variantes con `new_frame`: cada una se inserta tras el frame actual, así que quedan en orden
+  inverso.
+- Pixelorama con Metal nativo (`--rendering-method mobile --rendering-driver metal`) arranca
+  sin errores en Godot 4.7; falta comparar visualmente los shaders de efectos y el rendimiento
+  con lienzos grandes antes de cambiar el renderizador por defecto.

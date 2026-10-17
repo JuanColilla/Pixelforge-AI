@@ -81,10 +81,14 @@ static func styled_prompt(request: Dictionary) -> String:
 	return prompt
 
 
-## About one megapixel with the target's aspect ratio, in multiples of 64.
+## Generation area scales with the target: a 64 px sprite gains nothing from a megapixel
+## render, and 512 px is about 4x faster than 1024 px (3.3 s vs 13.4 s, M5 Max). Keeps the
+## target's aspect ratio, in multiples of 64.
 static func generation_size_for(target: Vector2i) -> Vector2i:
+	var longest := maxi(target.x, target.y)
+	var side := 512.0 if longest <= 128 else (768.0 if longest <= 256 else 1024.0)
 	var aspect := float(target.x) / float(target.y)
-	var width := sqrt(1024.0 * 1024.0 * aspect)
+	var width := sqrt(side * side * aspect)
 	return Vector2i(maxi(256, snappedi(width, 64)), maxi(256, snappedi(width / aspect, 64)))
 
 

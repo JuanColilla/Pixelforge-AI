@@ -42,16 +42,30 @@ Una línea JSON por petición y por respuesta:
 ```
 
 Métodos: `ping`, `get_project_info`, `view_canvas`, `read_pixels`, `draw_pixels`, `draw_line`,
-`draw_rect`, `fill`, `paint_grid`, `clear_cel`, `set_image`, `add_layer`, `add_frame`,
-`select_cel`, `new_project`, `undo`, `redo`, `generate`, `cancel`. `frame`/`layer` = -1 usa el
-cel actual; en `view_canvas`, `layer` = -1 mezcla todas las capas visibles.
+`draw_rect`, `fill`, `paint_grid`, `clear_cel`, `batch`, `set_image`, `add_layer`, `add_frame`,
+`select_cel`, `new_project`, `undo`, `redo`, `generate`, `cancel`.
+
+Todas las operaciones de dibujo pasan por `CanvasOps.apply_ops`: cada operación (`pixels`,
+`line`, `rect`, `fill`, `grid`, `clear`) se valida y compila a un `Callable`, y el lote se
+aplica sobre una copia del cel que se escribe una sola vez. Una operación inválida aborta el
+lote sin dibujar nada. `batch` expone esto al MCP, que manda N operaciones en una llamada y
+un solo paso de deshacer.
+
+`generate` acepta `variants` (1–4, semillas consecutivas) y `preview` (devuelve una hoja de
+contacto PNG). Con `new_layer`, la primera variante queda visible y el resto en capas ocultas.
+
+`frame`/`layer` = -1 usa el cel actual; en `view_canvas`, `layer` = -1 mezcla todas las capas
+visibles.
 
 ## Motores
 
-- **ComfyUI**: grafo Z-Image Turbo en formato API (8 pasos, `res_multistep`, cfg 1), a ~1 MP con
-  la proporción del destino. Se puede sustituir por un workflow propio con `{{prompt}}`,
-  `{{width}}`, `{{height}}` y `{{seed}}`. Medido en M5 Max: 76 s con la carga en frío y 17 s
-  en caliente.
+- **ComfyUI**: grafo Z-Image Turbo en formato API (8 pasos, `res_multistep`, cfg 1). El área
+  de generación depende del destino: 512² hasta 128 px, 768² hasta 256 px y 1024² por encima.
+  Benchmark en M5 Max: 13,4 s a 1024 px frente a 3,3 s a 512 px; un lote de 4 a 512 px tarda
+  15,2 s, así que agrupar en lote no ahorra tiempo en MPS. La salida es `PreviewImage` (carpeta
+  temp de ComfyUI). La primera generación tras arrancar ComfyUI añade la carga del modelo
+  (~60 s). Se puede sustituir por un workflow propio con `{{prompt}}`, `{{width}}`,
+  `{{height}}` y `{{seed}}`.
 - **Grok CLI**: `grok -p … --always-approve --output-format json --max-turns 8`, con la orden
   de guardar el PNG en la carpeta del trabajo. Unos 30 s y unos 0,08 $ por imagen; casi todo
   el coste es el bucle del agente.

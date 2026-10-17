@@ -32,6 +32,7 @@ var _use_palette: CheckBox
 var _remove_background: CheckBox
 var _target: OptionButton
 var _seed: SpinBox
+var _variants: SpinBox
 var _generate: Button
 var _cancel: Button
 var _status: Label
@@ -112,8 +113,19 @@ func _ready() -> void:
 	var seed_container := _labeled(tr("Seed"), _seed)
 	root.add_child(seed_container)
 
+	_variants = _spin(1, Generator.MAX_VARIANTS, 1)
+	_variants.tooltip_text = tr("Extra variants use the next seeds and land on hidden layers")
+	var variants_container := _labeled(tr("Variants"), _variants)
+	root.add_child(variants_container)
+
 	_size_dependent = [
-		size_container, colors_container, _use_palette, _remove_background, target_container, seed_container
+		size_container,
+		colors_container,
+		_use_palette,
+		_remove_background,
+		target_container,
+		seed_container,
+		variants_container,
 	]
 
 	var actions := HBoxContainer.new()
@@ -207,6 +219,7 @@ func _on_generate_pressed() -> void:
 		"remove_background": _remove_background.button_pressed,
 		"target": _target.get_item_metadata(_target.selected),
 		"seed": int(_seed.value),
+		"variants": int(_variants.value),
 	}
 	var result: Dictionary = await generator.generate(request)
 	if result.has("message"):

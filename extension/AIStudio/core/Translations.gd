@@ -24,6 +24,9 @@ const ES := {
 	"Current cel": "Cel actual",
 	"New frame": "Fotograma nuevo",
 	"Seed": "Semilla",
+	"Variants": "Variantes",
+	"Extra variants use the next seeds and land on hidden layers":
+	"Las variantes extra usan las semillas siguientes y van a capas ocultas",
 	"-1 picks a random seed": "-1 elige una semilla aleatoria",
 	"Generate": "Generar",
 	"Cancel": "Cancelar",

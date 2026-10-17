@@ -96,7 +96,8 @@ func run_agent(request: Dictionary, bridge_file: String) -> Dictionary:
 		"You are a pixel artist working inside the Pixelorama editor through the `pixelorama` "
 		+ "MCP tools. Task: %s\n\n"
 		+ "Start with get_project_info and view_canvas. Draw on a new layer unless the task says "
-		+ "otherwise. Prefer paint_grid for shapes and draw_pixels for touch-ups. Look at your "
+		+ "otherwise. Group drawing into few batch calls (grid for shapes, then lines and pixels "
+		+ "for details); each batch is one undo step. Look at your "
 		+ "work with view_canvas after each major step and fix what looks wrong. Finish with a "
 		+ "short summary of what you drew."
 	) % request.prompt

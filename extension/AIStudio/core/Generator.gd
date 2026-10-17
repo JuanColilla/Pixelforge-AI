@@ -14,6 +14,9 @@ const ENGINE_LABELS := {
 }
 const ENGINES := ["comfyui", "grok", "pixellab", "claude_pixels", "claude_agent"]
 const TARGETS := ["new_layer", "current_cel", "new_frame"]
+const MAX_VARIANTS := 4
+const PREVIEW_SIDE := 192
+const PREVIEW_GAP := 4
 
 const Pixelize := preload("Pixelize.gd")
 const ComfyUIProvider := preload("../providers/ComfyUIProvider.gd")
@@ -55,6 +58,8 @@ func normalize(raw: Dictionary) -> Dictionary:
 		"seed": int(raw.get("seed", -1)),
 		"frame": int(raw.get("frame", -1)),
 		"layer": int(raw.get("layer", -1)),
+		"variants": int(raw.get("variants", 1)),
+		"preview": bool(raw.get("preview", false)),
 	}
 	request["palette"] = canvas.palette_colors() if request.use_palette else PackedColorArray()
 	if not request.engine in ENGINES:
@@ -65,6 +70,10 @@ func normalize(raw: Dictionary) -> Dictionary:
 		return {"error": "the prompt is empty"}
 	if request.size.x < 1 or request.size.y < 1 or request.size.x > 1024 or request.size.y > 1024:
 		return {"error": "size must be between 1 and 1024"}
+	if request.variants < 1 or request.variants > MAX_VARIANTS:
+		return {"error": "variants must be between 1 and %d" % MAX_VARIANTS}
+	if request.variants > 1 and request.target == "current_cel":
+		return {"error": "variants need target new_layer or new_frame"}
 	return request
 
 
@@ -105,7 +114,41 @@ func cancel() -> void:
 		provider.cancel()
 
 
+## Generates [code]variants[/code] images with consecutive seeds. With new_layer, only the
+## first variant stays visible; the others are hidden layers to compare and pick from.
 func _run_image(request: Dictionary) -> Dictionary:
+	var base_seed: int = request.seed if request.seed >= 0 else randi() % 1_000_000_000
+	var placed: Array[Dictionary] = []
+	var images: Array[Image] = []
+	for index in request.variants:
+		if request.variants > 1:
+			status_changed.emit(
+				tr("Generating with %s…") % tr(ENGINE_LABELS[request.engine])
+				+ " (%d/%d)" % [index + 1, request.variants],
+				true
+			)
+		var variant := request.duplicate()
+		variant.seed = base_seed + index
+		var generated := await _generate_image(variant)
+		if generated.has("error"):
+			if placed.is_empty():
+				return generated
+			return _summary(request, placed, images, "variant %d failed: %s" % [index + 1, generated.error])
+		var suffix := "" if request.variants == 1 else " #%d" % (index + 1)
+		var written := _place(generated.image, variant, suffix)
+		if written.has("error"):
+			return written if placed.is_empty() else _summary(request, placed, images, written.error)
+		written["seed"] = variant.seed
+		placed.append(written)
+		images.append(generated.image)
+	if request.target == "new_layer":
+		for index in range(1, placed.size()):
+			canvas.set_layer_visible(placed[index].layer, false)
+		canvas.select_cel(placed[0].frame, placed[0].layer)
+	return _summary(request, placed, images, "")
+
+
+func _generate_image(request: Dictionary) -> Dictionary:
 	var generated: Dictionary
 	match request.engine:
 		"comfyui":
@@ -116,20 +159,48 @@ func _run_image(request: Dictionary) -> Dictionary:
 			generated = await _providers.grok.generate(request)
 		"claude_pixels":
 			generated = await _providers.claude.generate_pixels(request)
-	if generated.has("error"):
+	if generated.has("error") or request.engine == "claude_pixels":
 		return generated
-	var image: Image = generated.image
-	if request.engine != "claude_pixels":
-		image = Pixelize.to_pixel_art(
-			image,
-			request.size,
-			{
-				"colors": request.colors,
-				"palette": request.palette,
-				"remove_background": request.remove_background,
-			}
-		)
-	return _place(image, request)
+	var image := Pixelize.to_pixel_art(
+		generated.image,
+		request.size,
+		{
+			"colors": request.colors,
+			"palette": request.palette,
+			"remove_background": request.remove_background,
+		}
+	)
+	return {"image": image}
+
+
+func _summary(request: Dictionary, placed: Array[Dictionary], images: Array[Image], warning: String) -> Dictionary:
+	var result := placed[0].duplicate()
+	result["engine"] = request.engine
+	result["width"] = images[0].get_width()
+	result["height"] = images[0].get_height()
+	result["variants"] = placed
+	if not warning.is_empty():
+		result["warning"] = warning
+	if request.preview:
+		result["preview_png_base64"] = Marshalls.raw_to_base64(contact_sheet(images).save_png_to_buffer())
+	return result
+
+
+## Places the images side by side, scaled up with nearest-neighbor so a sprite is ~192 px.
+static func contact_sheet(images: Array[Image]) -> Image:
+	var size := images[0].get_size()
+	var scale := maxi(1, PREVIEW_SIDE / maxi(size.x, size.y))
+	var cell := size * scale
+	var sheet := Image.create_empty(
+		cell.x * images.size() + PREVIEW_GAP * (images.size() - 1), cell.y, false, Image.FORMAT_RGBA8
+	)
+	for index in images.size():
+		var scaled := Image.new()
+		scaled.copy_from(images[index])
+		scaled.convert(Image.FORMAT_RGBA8)
+		scaled.resize(cell.x, cell.y, Image.INTERPOLATE_NEAREST)
+		sheet.blit_rect(scaled, Rect2i(Vector2i.ZERO, cell), Vector2i(index * (cell.x + PREVIEW_GAP), 0))
+	return sheet
 
 
 func _run_agent(request: Dictionary) -> Dictionary:
@@ -138,12 +209,12 @@ func _run_agent(request: Dictionary) -> Dictionary:
 	return await _providers.claude.run_agent(request, bridge_file)
 
 
-func _place(image: Image, request: Dictionary) -> Dictionary:
+func _place(image: Image, request: Dictionary, name_suffix: String) -> Dictionary:
 	var frame: int = request.frame
 	var layer: int = request.layer
 	match request.target:
 		"new_layer":
-			var added: Dictionary = canvas.add_layer("AI: " + request.prompt.left(24))
+			var added: Dictionary = canvas.add_layer("AI: " + request.prompt.left(24) + name_suffix)
 			layer = added.layer
 		"new_frame":
 			var added: Dictionary = canvas.add_frame(frame)
@@ -151,7 +222,4 @@ func _place(image: Image, request: Dictionary) -> Dictionary:
 	var written: Dictionary = canvas.write_cel(image, frame, layer)
 	if written.has("error"):
 		return written
-	written["engine"] = request.engine
-	written["width"] = image.get_width()
-	written["height"] = image.get_height()
 	return written

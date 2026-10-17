@@ -6,11 +6,18 @@ extends Node
 
 signal state_changed(listening: bool, message: String)
 
-const PixelGrid := preload("../core/PixelGrid.gd")
 const Http := preload("../core/Http.gd")
 const INFO_PATH := "user://ai_studio/bridge.json"
 const MAX_BUFFER_BYTES := 32 * 1024 * 1024
 const NEWLINE := 10
+const SINGLE_OPS := {
+	"draw_pixels": "pixels",
+	"draw_line": "line",
+	"draw_rect": "rect",
+	"fill": "fill",
+	"paint_grid": "grid",
+	"clear_cel": "clear",
+}
 
 var settings: RefCounted
 var canvas: RefCounted
@@ -146,51 +153,15 @@ func _dispatch(method: String, p: Dictionary) -> Dictionary:
 				int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("width", 0)), int(p.get("height", 0))
 			)
 			return canvas.read_pixels(frame, layer, rect)
-		"draw_pixels":
-			var pixels: Variant = p.get("pixels", [])
-			if typeof(pixels) != TYPE_ARRAY:
-				return {"error": "pixels must be a list"}
-			return canvas.set_pixels(frame, layer, pixels)
-		"draw_line":
-			var color: Variant = PixelGrid.parse_color(p.get("color"))
-			if color == null:
-				return {"error": "invalid color"}
-			return canvas.draw_line(
-				frame,
-				layer,
-				Vector2i(int(p.get("x0", 0)), int(p.get("y0", 0))),
-				Vector2i(int(p.get("x1", 0)), int(p.get("y1", 0))),
-				color
-			)
-		"draw_rect":
-			var color: Variant = PixelGrid.parse_color(p.get("color"))
-			if color == null:
-				return {"error": "invalid color"}
-			var rect := Rect2i(
-				int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("width", 1)), int(p.get("height", 1))
-			)
-			return canvas.draw_rect(frame, layer, rect, color, bool(p.get("filled", true)))
-		"fill":
-			var color: Variant = PixelGrid.parse_color(p.get("color"))
-			if color == null:
-				return {"error": "invalid color"}
-			return canvas.flood_fill(frame, layer, Vector2i(int(p.get("x", 0)), int(p.get("y", 0))), color)
-		"paint_grid":
-			var palette := PixelGrid.parse_palette(p.get("palette", []))
-			if palette.has("error"):
-				return palette
-			var rows: Variant = p.get("rows", [])
-			if typeof(rows) != TYPE_ARRAY:
-				return {"error": "rows must be a list of strings"}
-			return canvas.paint_grid(
-				frame,
-				layer,
-				Vector2i(int(p.get("x", 0)), int(p.get("y", 0))),
-				palette.palette,
-				PackedStringArray(rows)
-			)
-		"clear_cel":
-			return canvas.clear_cel(frame, layer)
+		"draw_pixels", "draw_line", "draw_rect", "fill", "paint_grid", "clear_cel":
+			var op := p.duplicate()
+			op["op"] = SINGLE_OPS[method]
+			return canvas.apply_ops(frame, layer, [op])
+		"batch":
+			var ops: Variant = p.get("ops", [])
+			if typeof(ops) != TYPE_ARRAY:
+				return {"error": "ops must be a list"}
+			return canvas.apply_ops(frame, layer, ops)
 		"set_image":
 			var image := Http.decode_image(Marshalls.base64_to_raw(str(p.get("png_base64", ""))))
 			if image == null:

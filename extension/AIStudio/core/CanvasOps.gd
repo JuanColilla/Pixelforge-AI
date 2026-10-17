@@ -162,108 +162,138 @@ func edit_cel(frame: int, layer: int, edit: Callable) -> Dictionary:
 	return written
 
 
-func set_pixels(frame: int, layer: int, pixels: Array) -> Dictionary:
-	var parsed: Array[Array] = []
-	for entry in pixels:
-		if typeof(entry) != TYPE_DICTIONARY:
-			return {"error": "each pixel must be an object {x, y, color}"}
-		var color: Variant = PixelGrid.parse_color(entry.get("color"))
-		if color == null:
-			return {"error": "invalid color: %s" % str(entry.get("color"))}
-		parsed.append([Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0))), color])
-	return edit_cel(
+## Applies drawing operations to one cel as a single undo step. Each op is a Dictionary with
+## an "op" key: pixels, line, rect, fill, grid or clear (see _compile_op for the fields).
+## Ops are validated before anything is drawn, so a bad op leaves the cel untouched.
+func apply_ops(frame: int, layer: int, ops: Array) -> Dictionary:
+	if ops.is_empty():
+		return {"error": "no operations given"}
+	var steps: Array[Callable] = []
+	for index in ops.size():
+		var op: Variant = ops[index]
+		if typeof(op) != TYPE_DICTIONARY:
+			return {"error": "operation %d is not an object" % index}
+		var step: Variant = _compile_op(op)
+		if step is Dictionary:
+			return {"error": "operation %d (%s): %s" % [index, op.get("op", "?"), step.error]}
+		steps.append(step)
+	var result := edit_cel(
 		frame,
 		layer,
 		func(image: Image) -> int:
-			var count := 0
-			for pixel in parsed:
-				if Rect2i(Vector2i.ZERO, image.get_size()).has_point(pixel[0]):
-					image.set_pixelv(pixel[0], pixel[1])
-					count += 1
-			return count
+			var touched := 0
+			for step in steps:
+				touched += step.call(image)
+			return touched
 	)
+	if not result.has("error"):
+		result["operations"] = steps.size()
+	return result
 
 
-func draw_line(frame: int, layer: int, from: Vector2i, to: Vector2i, color: Color) -> Dictionary:
-	return edit_cel(
-		frame,
-		layer,
-		func(image: Image) -> int:
-			var count := 0
-			for point in Geometry2D.bresenham_line(from, to):
-				if Rect2i(Vector2i.ZERO, image.get_size()).has_point(point):
-					image.set_pixelv(point, color)
-					count += 1
-			return count
-	)
-
-
-func draw_rect(frame: int, layer: int, rect: Rect2i, color: Color, filled: bool) -> Dictionary:
-	return edit_cel(
-		frame,
-		layer,
-		func(image: Image) -> int:
-			var area := rect.intersection(Rect2i(Vector2i.ZERO, image.get_size()))
-			var count := 0
-			for y in range(area.position.y, area.end.y):
-				for x in range(area.position.x, area.end.x):
-					var on_border := (
-						x == rect.position.x
-						or y == rect.position.y
-						or x == rect.end.x - 1
-						or y == rect.end.y - 1
-					)
-					if filled or on_border:
-						image.set_pixel(x, y, color)
+## Returns a Callable(image) -> touched pixel count, or {"error": ...}.
+func _compile_op(op: Dictionary) -> Variant:
+	match str(op.get("op", "")):
+		"pixels":
+			var parsed: Array[Array] = []
+			var pixels: Variant = op.get("pixels", [])
+			if typeof(pixels) != TYPE_ARRAY:
+				return {"error": "pixels must be a list of {x, y, color}"}
+			for entry: Variant in pixels:
+				if typeof(entry) != TYPE_DICTIONARY:
+					return {"error": "each pixel must be an object {x, y, color}"}
+				var color: Variant = PixelGrid.parse_color(entry.get("color"))
+				if color == null:
+					return {"error": "invalid color: %s" % str(entry.get("color"))}
+				parsed.append([Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0))), color])
+			return func(image: Image) -> int:
+				var count := 0
+				for pixel in parsed:
+					if Rect2i(Vector2i.ZERO, image.get_size()).has_point(pixel[0]):
+						image.set_pixelv(pixel[0], pixel[1])
 						count += 1
-			return count
-	)
+				return count
+		"line":
+			var color: Variant = PixelGrid.parse_color(op.get("color"))
+			if color == null:
+				return {"error": "invalid color"}
+			var from := Vector2i(int(op.get("x0", 0)), int(op.get("y0", 0)))
+			var to := Vector2i(int(op.get("x1", 0)), int(op.get("y1", 0)))
+			return func(image: Image) -> int:
+				var count := 0
+				for point in Geometry2D.bresenham_line(from, to):
+					if Rect2i(Vector2i.ZERO, image.get_size()).has_point(point):
+						image.set_pixelv(point, color)
+						count += 1
+				return count
+		"rect":
+			var color: Variant = PixelGrid.parse_color(op.get("color"))
+			if color == null:
+				return {"error": "invalid color"}
+			var rect := Rect2i(
+				int(op.get("x", 0)), int(op.get("y", 0)), int(op.get("width", 1)), int(op.get("height", 1))
+			)
+			var filled := bool(op.get("filled", true))
+			return func(image: Image) -> int:
+				var area := rect.intersection(Rect2i(Vector2i.ZERO, image.get_size()))
+				var count := 0
+				for y in range(area.position.y, area.end.y):
+					for x in range(area.position.x, area.end.x):
+						var on_border := (
+							x == rect.position.x
+							or y == rect.position.y
+							or x == rect.end.x - 1
+							or y == rect.end.y - 1
+						)
+						if filled or on_border:
+							image.set_pixel(x, y, color)
+							count += 1
+				return count
+		"fill":
+			var color: Variant = PixelGrid.parse_color(op.get("color"))
+			if color == null:
+				return {"error": "invalid color"}
+			var start := Vector2i(int(op.get("x", 0)), int(op.get("y", 0)))
+			return func(image: Image) -> int: return _flood_fill(image, start, color)
+		"grid":
+			var palette := PixelGrid.parse_palette(op.get("palette", []))
+			if palette.has("error"):
+				return palette
+			var rows: Variant = op.get("rows", [])
+			if typeof(rows) != TYPE_ARRAY:
+				return {"error": "rows must be a list of strings"}
+			var origin := Vector2i(int(op.get("x", 0)), int(op.get("y", 0)))
+			var colors: PackedColorArray = palette.palette
+			var lines := PackedStringArray(rows)
+			return func(image: Image) -> int: return PixelGrid.paint(image, origin, colors, lines)
+		"clear":
+			return func(image: Image) -> int:
+				image.fill(Color(0, 0, 0, 0))
+				return image.get_width() * image.get_height()
+	return {"error": "unknown op (use pixels, line, rect, fill, grid or clear)"}
 
 
 ## Contiguous bucket fill replacing the exact color found at [param start].
-func flood_fill(frame: int, layer: int, start: Vector2i, color: Color) -> Dictionary:
-	return edit_cel(
-		frame,
-		layer,
-		func(image: Image) -> int:
-			var bounds := Rect2i(Vector2i.ZERO, image.get_size())
-			if not bounds.has_point(start):
-				return 0
-			var original := image.get_pixelv(start)
-			if original == color:
-				return 0
-			var count := 0
-			var stack: Array[Vector2i] = [start]
-			while not stack.is_empty():
-				var point: Vector2i = stack.pop_back()
-				if not bounds.has_point(point) or image.get_pixelv(point) != original:
-					continue
-				image.set_pixelv(point, color)
-				count += 1
-				stack.append(point + Vector2i.RIGHT)
-				stack.append(point + Vector2i.LEFT)
-				stack.append(point + Vector2i.DOWN)
-				stack.append(point + Vector2i.UP)
-			return count
-	)
-
-
-func paint_grid(
-	frame: int, layer: int, origin: Vector2i, palette: PackedColorArray, rows: PackedStringArray
-) -> Dictionary:
-	return edit_cel(
-		frame, layer, func(image: Image) -> int: return PixelGrid.paint(image, origin, palette, rows)
-	)
-
-
-func clear_cel(frame: int, layer: int) -> Dictionary:
-	return edit_cel(
-		frame,
-		layer,
-		func(image: Image) -> int:
-			image.fill(Color(0, 0, 0, 0))
-			return image.get_width() * image.get_height()
-	)
+static func _flood_fill(image: Image, start: Vector2i, color: Color) -> int:
+	var bounds := Rect2i(Vector2i.ZERO, image.get_size())
+	if not bounds.has_point(start):
+		return 0
+	var original := image.get_pixelv(start)
+	if original == color:
+		return 0
+	var count := 0
+	var stack: Array[Vector2i] = [start]
+	while not stack.is_empty():
+		var point: Vector2i = stack.pop_back()
+		if not bounds.has_point(point) or image.get_pixelv(point) != original:
+			continue
+		image.set_pixelv(point, color)
+		count += 1
+		stack.append(point + Vector2i.RIGHT)
+		stack.append(point + Vector2i.LEFT)
+		stack.append(point + Vector2i.DOWN)
+		stack.append(point + Vector2i.UP)
+	return count
 
 
 ## Adds a pixel layer above the current one, selects it and returns its index.
@@ -309,3 +339,10 @@ func undo() -> Dictionary:
 func redo() -> Dictionary:
 	project().commit_redo()
 	return {"action": project().undo_redo.get_current_action_name()}
+
+
+func set_layer_visible(layer: int, visible: bool) -> void:
+	var current := project()
+	if layer >= 0 and layer < current.layers.size():
+		current.layers[layer].visible = visible
+		api.general.get_global().canvas.queue_redraw()

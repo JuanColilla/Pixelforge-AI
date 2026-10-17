@@ -12,7 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -34,8 +34,9 @@ mcp = MCPServer(
         "Draw pixel art in the user's running Pixelorama editor. Coordinates are pixels with "
         "(0,0) at the top-left. Call get_project_info first, then view_canvas to see the work. "
         "paint_grid is the fastest way to draw a sprite: a palette plus rows of base62 palette "
-        "indices ('.' leaves a pixel untouched). Every drawing call is one undo step. "
-        "generate_image creates a whole sprite with an image model and pixelizes it to the canvas."
+        "indices ('.' leaves a pixel untouched). Use batch to send many drawing ops at once: one "
+        "call, one undo step. generate_image creates whole sprites with an image model, can return "
+        "several variants, and includes a preview image in its result."
     ),
 )
 
@@ -44,6 +45,52 @@ class Pixel(BaseModel):
     x: int
     y: int
     color: ColorText
+
+
+class PixelsOp(BaseModel):
+    op: Literal["pixels"]
+    pixels: list[Pixel]
+
+
+class LineOp(BaseModel):
+    op: Literal["line"]
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    color: ColorText
+
+
+class RectOp(BaseModel):
+    op: Literal["rect"]
+    x: int
+    y: int
+    width: int
+    height: int
+    color: ColorText
+    filled: bool = True
+
+
+class FillOp(BaseModel):
+    op: Literal["fill"]
+    x: int
+    y: int
+    color: ColorText
+
+
+class GridOp(BaseModel):
+    op: Literal["grid"]
+    palette: list[ColorText]
+    rows: list[str]
+    x: int = 0
+    y: int = 0
+
+
+class ClearOp(BaseModel):
+    op: Literal["clear"]
+
+
+DrawOp = Annotated[Union[PixelsOp, LineOp, RectOp, FillOp, GridOp, ClearOp], Field(discriminator="op")]
 
 
 def bridge_file() -> Path:
@@ -191,6 +238,19 @@ async def clear_cel(frame: Frame = -1, layer: Layer = -1) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def batch(ops: list[DrawOp], frame: Frame = -1, layer: Layer = -1) -> dict[str, Any]:
+    """Apply many drawing ops to one cel in a single call and a single undo step.
+
+    Prefer this over separate calls: e.g. a grid for the base shape, then lines and pixels
+    for details. Ops are validated first; if one is invalid nothing is drawn.
+    """
+    return await call(
+        "batch",
+        {"ops": [o.model_dump() for o in ops], "frame": frame, "layer": layer},
+    )
+
+
+@mcp.tool()
 async def add_layer(name: str = "Layer") -> dict[str, Any]:
     """Add a pixel layer above the current one and make it current."""
     return await call("add_layer", {"name": name})
@@ -226,13 +286,13 @@ async def redo() -> dict[str, Any]:
     return await call("redo")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def generate_image(
     prompt: str,
     engine: Annotated[
         Engine,
-        Field(description="comfyui runs locally (free); grok and pixellab are remote and cost credits; "
-                          "claude_pixels draws small sprites (<=128px) as data."),
+        Field(description="comfyui runs locally (free, ~3 s per sprite); grok and pixellab are remote "
+                          "and cost credits; claude_pixels draws small sprites (<=128px) as data."),
     ] = "comfyui",
     width: Annotated[int, Field(description="0 uses the canvas width.")] = 0,
     height: Annotated[int, Field(description="0 uses the canvas height.")] = 0,
@@ -241,17 +301,32 @@ async def generate_image(
     remove_background: bool = True,
     target: Target = "new_layer",
     seed: Annotated[int, Field(description="-1 picks a random seed.")] = -1,
-) -> dict[str, Any]:
-    """Generate a sprite with an image engine, pixelize it to the canvas and place it."""
+    variants: Annotated[
+        int,
+        Field(ge=1, le=4, description="Images to generate with consecutive seeds. With new_layer, the "
+                                      "first stays visible and the rest are hidden layers to choose from."),
+    ] = 1,
+) -> list[Any]:
+    """Generate sprites with an image engine, pixelize them to the canvas and place them.
+
+    Returns the placement details plus a preview image of every variant side by side, so no
+    extra view_canvas call is needed to judge the result.
+    """
     params: dict[str, Any] = {
         "prompt": prompt, "engine": engine, "colors": colors, "use_palette": use_palette,
         "remove_background": remove_background, "target": target, "seed": seed,
+        "variants": variants, "preview": True,
     }
     if width > 0:
         params["width"] = width
     if height > 0:
         params["height"] = height
-    return await call("generate", params, timeout=GENERATION_TIMEOUT_SEC)
+    result = await call("generate", params, timeout=GENERATION_TIMEOUT_SEC * variants)
+    preview = result.pop("preview_png_base64", None)
+    content: list[Any] = [result]
+    if preview:
+        content.append(Image(data=base64.b64decode(preview), format="png"))
+    return content
 
 
 def main() -> None:
