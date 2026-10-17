@@ -25,6 +25,11 @@ Generated images are fitted to the canvas, the background is removed and colors 
 to N colors or to the active palette. You can generate up to four variants with consecutive
 seeds; extra variants go to hidden layers so you can compare and keep one.
 
+With a PixelLab token set, the tab also offers four tools that start from the sprite already on
+the canvas: 8 directional rotations, a single rotation, a text-driven animation and in-between
+frames for two keyframes. Results land as new frames (or layers) in one undo step. Without a
+token, none of the PixelLab options appear.
+
 ## Requirements
 
 - macOS (tested on Apple Silicon). Linux should work but is untested.
@@ -92,7 +97,9 @@ Config), using absolute paths, then restart Claude Desktop:
 Tools: `get_project_info`, `view_canvas`, `read_pixels`, `paint_grid`, `draw_pixels`,
 `draw_line`, `draw_rect`, `fill`, `clear_cel`, `batch` (many ops in one call and one undo
 step), `add_layer`, `add_frame`, `select_cel`, `new_project`, `undo`, `redo` and
-`generate_image` (returns a preview image of every variant).
+`generate_image` (returns a preview image of every variant). With a PixelLab token:
+`pixellab_rotations`, `pixellab_rotate`, `pixellab_animate`, `pixellab_interpolate` and
+`pixellab_balance`.
 
 Tip: keep the Pixelorama window visible next to your chat. macOS does not repaint a fully
 covered window, although the changes still apply.
@@ -119,7 +126,8 @@ tested yet.
 extension/AIStudio/   GDScript extension (UI, engines, pixelization, bridge)
 mcp/                  pixelorama-mcp server (Python, MCP SDK 2.x)
 patches/              the one-line hook that loads the extension in Pixelorama
-scripts/              setup, run, package and MCP registration
+scripts/              setup, run, package, MCP registration and the PixelLab test run
+tests/pixellab/       mock PixelLab API and bridge tests used by scripts/test-pixellab.sh
 knowledge/            architecture notes and technical debt
 ```
 

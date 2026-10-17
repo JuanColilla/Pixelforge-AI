@@ -50,10 +50,15 @@ func save() -> void:
 
 
 func pixellab_token() -> String:
-	var from_env := OS.get_environment("PIXELLAB_API_TOKEN")
+	var from_env := OS.get_environment("PIXELLAB_API_TOKEN").strip_edges()
 	if not from_env.is_empty():
 		return from_env
-	return str(get_value("pixellab_token"))
+	return str(get_value("pixellab_token")).strip_edges()
+
+
+## PixelLab is optional: without a token none of its UI, tools or network calls exist.
+func pixellab_connected() -> bool:
+	return not pixellab_token().is_empty()
 
 
 ## Returns the configured executable, or the first match in the usual install folders.

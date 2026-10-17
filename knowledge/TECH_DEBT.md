@@ -1,8 +1,14 @@
 # Technical debt
 
-- PixelLab: only the missing-token error has been exercised; a real generation and the exact
-  shape of a 202 response (`background_job_id`) are still unconfirmed.
-- PixelLab UI is shown even when no token is configured; it should stay hidden until one is.
+- PixelLab: no tool has run with a real token yet (pixflux, rotations, rotate, animate,
+  interpolate); they are tested against a mock that validates requests with the public OpenAPI
+  schema (`scripts/test-pixellab.sh`). Still to confirm with the real API: the order and shape
+  of the 8 images from `generate-8-rotations-v3` (list or map by direction), whether
+  `animate-with-text-v3` returns the input frame, and where `interpolation-v2` puts its frames
+  and whether they include the keyframes.
+- PixelLab publishes no up-front price for rotations, rotate, animate or interpolate
+  (`/pro-flash/cost` only covers the Pro Flash family). The balance is shown before a run and
+  the billed `usage` after it.
 - `dist/AIStudio.zip` is untested in an official Pixelorama build. Packaged installs need the
   MCP folder set by hand in the settings.
 - Grok: agent-loop overhead dominates the cost per image (~265k tokens). Restrict tools with

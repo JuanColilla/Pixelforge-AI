@@ -24,6 +24,7 @@ scripts/setup.sh          # clone + patch Pixelorama, symlink, import assets, uv
 scripts/run.sh            # run Pixelorama from source with the extension
 scripts/package.sh        # dist/AIStudio.zip for a stock Pixelorama build
 scripts/register-mcp.sh   # register pixelorama-mcp with Claude Code and/or Grok (user scope)
+scripts/test-pixellab.sh  # PixelLab tools against a mock API checked with the public OpenAPI
 godot --headless --path Pixelorama --quit-after 300   # load check without a window
 ```
 
@@ -34,6 +35,8 @@ Details in `knowledge/architecture.md`. In short:
 - `core/Generator.gd` orchestrates engine → `Pixelize.gd` → `CanvasOps.gd` (layer/cel/frame).
 - `core/CanvasOps.gd` is the only write path to the canvas. Drawing ops are compiled and
   applied as one batch through `ExtensionsApi.project.set_pixelcel_image`: one undo step each.
+  `insert_frames` / `insert_layers` add a whole result (rotations, animation frames) as one
+  undo action of their own.
 - `bridge/BridgeServer.gd`: JSON-lines over TCP on `127.0.0.1:47821`; random token in
   `<Pixelorama user dir>/ai_studio/bridge.json` (owner-only permissions).
 - `mcp/src/pixelorama_mcp/server.py`: thin MCP (stdio) → bridge translator.
@@ -41,7 +44,8 @@ Details in `knowledge/architecture.md`. In short:
 ### Invariants
 
 - INV-1: the bridge listens on `127.0.0.1` only and checks the token on every request.
-- INV-2: no canvas write bypasses `CanvasOps.write_cel`, so undo history stays complete.
+- INV-2: no canvas write bypasses `CanvasOps` (`write_cel`, `insert_frames`, `insert_layers`);
+  each operation is a single undo step, so undo history stays complete.
 - INV-3: extension nodes use `PROCESS_MODE_ALWAYS`; Pixelorama pauses the scene tree when
   unfocused and the bridge must keep answering.
 - INV-4: external CLIs run through `ProcessRunner` (non-blocking, cancellable, with timeout);
@@ -55,6 +59,13 @@ Details in `knowledge/architecture.md`. In short:
   reports false errors for scripts that use them. Run Pixelorama headless
   (`--quit-after N`) and read the log instead.
 - Run only one Pixelorama instance at a time: instances share the user dir and the bridge port.
+  On macOS `user://` lives under `$HOME`, so a test instance can run beside another one with
+  `HOME=<temp dir>` and its own `bridge_port` in that dir's `ai_studio/settings.cfg`
+  (`scripts/test-pixellab.sh` does this).
+- Pixelorama functions that take `Array[Frame]` reject an untyped `[]` at runtime, which a load
+  check does not catch: declare `var frames: Array[Frame] = []`.
+- The PixelLab API checks the token before the body (401 before 422), so request validation
+  cannot be tested against the real API without a token; use `scripts/test-pixellab.sh`.
 - Do not kill Pixelorama with `pkill`: it leaves `.running` and `extensions/Monitoring.ini`
   behind, and the next launch flags the extension as faulty. On macOS quit with
   `osascript -e 'quit app "Godot"'`.

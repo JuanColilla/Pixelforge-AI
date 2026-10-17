@@ -14,6 +14,13 @@ const ENGINE_LABELS := {
 }
 const ENGINES := ["comfyui", "grok", "pixellab", "claude_pixels", "claude_agent"]
 const TARGETS := ["new_layer", "current_cel", "new_frame"]
+const PIXELLAB_TOOL_LABELS := {
+	"rotations": "PixelLab: 8 rotations",
+	"rotate": "PixelLab: rotate",
+	"animate": "PixelLab: animate",
+	"interpolate": "PixelLab: interpolate",
+}
+const ROTATION_PLACEMENTS := ["frames", "layers"]
 const MAX_VARIANTS := 4
 const PREVIEW_SIDE := 192
 const PREVIEW_GAP := 4
@@ -42,6 +49,7 @@ func setup(settings_store: RefCounted, canvas_ops: RefCounted) -> void:
 		"grok": GrokProvider.new(settings, self),
 		"claude": ClaudeProvider.new(settings, self),
 	}
+	_providers.pixellab.progress.connect(func(text: String) -> void: status_changed.emit(text, true))
 
 
 ## Fills defaults and validates a request coming from the panel or the bridge.
@@ -64,6 +72,8 @@ func normalize(raw: Dictionary) -> Dictionary:
 	request["palette"] = canvas.palette_colors() if request.use_palette else PackedColorArray()
 	if not request.engine in ENGINES:
 		return {"error": "unknown engine '%s' (use %s)" % [request.engine, ", ".join(ENGINES)]}
+	if request.engine == "pixellab" and not settings.pixellab_connected():
+		return {"error": PixelLabProvider.NOT_CONNECTED_ERROR}
 	if not request.target in TARGETS:
 		return {"error": "unknown target '%s' (use %s)" % [request.target, ", ".join(TARGETS)]}
 	if request.prompt.is_empty():
@@ -201,6 +211,253 @@ static func contact_sheet(images: Array[Image]) -> Image:
 		scaled.resize(cell.x, cell.y, Image.INTERPOLATE_NEAREST)
 		sheet.blit_rect(scaled, Rect2i(Vector2i.ZERO, cell), Vector2i(index * (cell.x + PREVIEW_GAP), 0))
 	return sheet
+
+
+## Engines the panel offers: PixelLab only while a token is set.
+func available_engines() -> Array:
+	if settings.pixellab_connected():
+		return ENGINES
+	return ENGINES.filter(func(engine: String) -> bool: return engine != "pixellab")
+
+
+func pixellab_balance() -> Dictionary:
+	if not settings.pixellab_connected():
+		return {"error": PixelLabProvider.NOT_CONNECTED_ERROR}
+	return await _providers.pixellab.balance()
+
+
+## Runs one PixelLab tool on the canvas: reads the source cel(s), calls the API and places
+## the frames. With "dry_run" it returns the API request and the balance without spending.
+func run_pixellab(raw: Dictionary) -> Dictionary:
+	if not settings.pixellab_connected():
+		return {"error": PixelLabProvider.NOT_CONNECTED_ERROR}
+	var plan := prepare_pixellab(raw)
+	if plan.has("error"):
+		return plan
+	if bool(raw.get("dry_run", false)):
+		var preview := {
+			"dry_run": true,
+			"tool": plan.tool,
+			"path": plan.api.path,
+			"body": plan.api.body,
+			"region": _rect_array(plan.region),
+		}
+		preview["balance"] = await _providers.pixellab.balance()
+		return preview
+	if image_busy:
+		return {"error": "a generation is already running"}
+	image_busy = true
+	status_changed.emit(tr("Running %s…") % tr(PIXELLAB_TOOL_LABELS[plan.tool]), true)
+	var started := Time.get_ticks_msec()
+	var balance_before: Dictionary = await _providers.pixellab.balance()
+	var sent: Dictionary = await _providers.pixellab.send(plan.api)
+	var result := sent if sent.has("error") else _place_pixellab(plan, sent)
+	image_busy = false
+	result["seconds"] = snappedf((Time.get_ticks_msec() - started) / 1000.0, 0.1)
+	if result.has("error"):
+		status_changed.emit(tr("Error: %s") % result.error, is_busy())
+		return result
+	result["usage"] = sent.usage
+	if not balance_before.has("error"):
+		result["balance_before"] = balance_before
+	var cost := usage_text(sent.usage)
+	if cost.is_empty():
+		status_changed.emit(tr("Done in %s s") % result.seconds, is_busy())
+	else:
+		status_changed.emit(tr("Done in %s s, cost %s") % [result.seconds, cost], is_busy())
+	return result
+
+
+## Validates a tool request and builds the API call from the canvas. The source is cropped
+## to the whole canvas when it fits the endpoint's limits, otherwise to the sprite's bounds
+## plus a margin; results go back to the same region.
+func prepare_pixellab(raw: Dictionary) -> Dictionary:
+	var tool := str(raw.get("tool", ""))
+	if not tool in PIXELLAB_TOOL_LABELS:
+		return {"error": "unknown tool '%s' (use %s)" % [tool, ", ".join(PIXELLAB_TOOL_LABELS.keys())]}
+	var source: Dictionary = canvas.resolve_cel(int(raw.get("frame", -1)), int(raw.get("layer", -1)))
+	if source.has("error"):
+		return source
+	var merged := bool(raw.get("merged", false))
+	var no_background := bool(raw.get("remove_background", true))
+	var seed := int(raw.get("seed", -1))
+	var palette: PackedColorArray = (
+		canvas.palette_colors() if bool(raw.get("use_palette", false)) else PackedColorArray()
+	)
+	var text := str(raw.get("description", "")).strip_edges()
+	var first := _source_image(source.frame, source.layer, merged)
+	var plan := {"tool": tool, "frame": source.frame, "layer": source.layer, "text": text}
+	var region: Dictionary
+	var api: Dictionary
+	match tool:
+		"rotations":
+			plan["placement"] = str(raw.get("placement", "frames"))
+			if not plan.placement in ROTATION_PLACEMENTS:
+				return {"error": "placement must be one of %s" % ", ".join(ROTATION_PLACEMENTS)}
+			region = _source_region([first], 1, PixelLabProvider.ROTATIONS_MAX_SIZE)
+			if region.has("error"):
+				return region
+			api = PixelLabProvider.rotations_request(
+				first.get_region(region.rect), text, no_background, seed
+			)
+		"rotate":
+			plan["target"] = str(raw.get("target", "new_layer"))
+			if not plan.target in TARGETS:
+				return {"error": "unknown target '%s' (use %s)" % [plan.target, ", ".join(TARGETS)]}
+			var from_view := str(raw.get("from_view", "side"))
+			region = _source_region(
+				[first], PixelLabProvider.ROTATE_MIN_SIZE, PixelLabProvider.ROTATE_MAX_SIZE
+			)
+			if region.has("error"):
+				return region
+			api = PixelLabProvider.rotate_request(
+				first.get_region(region.rect),
+				str(raw.get("from_direction", "south")),
+				str(raw.get("to_direction", "east")),
+				from_view,
+				str(raw.get("to_view", from_view)),
+				seed,
+				palette
+			)
+		"animate":
+			var frame_count := int(raw.get("frame_count", 8))
+			var max_side := PixelLabProvider.ANIMATE_MAX_SIZE
+			var full := first.get_size()
+			if full.x * full.y * maxi(frame_count, 1) > PixelLabProvider.ANIMATE_PIXEL_BUDGET:
+				max_side = mini(
+					max_side, int(sqrt(PixelLabProvider.ANIMATE_PIXEL_BUDGET / float(maxi(frame_count, 1))))
+				)
+			region = _source_region([first], 1, max_side)
+			if region.has("error"):
+				return region
+			api = PixelLabProvider.animate_request(
+				first.get_region(region.rect), text, frame_count, no_background, seed
+			)
+		"interpolate":
+			var end_frame := int(raw.get("end_frame", source.frame + 1))
+			var end: Dictionary = canvas.resolve_cel(end_frame, source.layer)
+			if end.has("error"):
+				return end
+			if end.frame == source.frame:
+				return {"error": "the end keyframe must be a different frame"}
+			plan["end_frame"] = end.frame
+			var last := _source_image(end.frame, source.layer, merged)
+			region = _source_region(
+				[first, last], PixelLabProvider.INTERPOLATE_MIN_SIZE, PixelLabProvider.INTERPOLATE_MAX_SIZE
+			)
+			if region.has("error"):
+				return region
+			api = PixelLabProvider.interpolate_request(
+				first.get_region(region.rect),
+				last.get_region(region.rect),
+				text,
+				no_background,
+				seed,
+				palette
+			)
+	if api.has("error"):
+		return api
+	plan["region"] = region.rect
+	plan["api"] = api
+	return plan
+
+
+func usage_text(usage: Dictionary) -> String:
+	if usage.get("type") == "generations" and usage.get("generations") != null:
+		var generations := float(usage.generations)
+		if is_equal_approx(generations, roundf(generations)):
+			return tr("%s generations") % str(int(generations))
+		return tr("%s generations") % ("%.2f" % generations)
+	if usage.get("usd") != null:
+		return "$%.3f" % float(usage.usd)
+	return ""
+
+
+func _source_image(frame: int, layer: int, merged: bool) -> Image:
+	if merged:
+		return canvas.composite_image(frame)
+	return canvas.cel_image(frame, layer)
+
+
+## Picks the area sent to the API: the whole canvas when it fits [min_side, max_side],
+## otherwise the union of the sprites' used rects grown by a quarter on each side.
+static func _source_region(images: Array, min_side: int, max_side: int) -> Dictionary:
+	var size: Vector2i = images[0].get_size()
+	if size.x >= min_side and size.y >= min_side and size.x <= max_side and size.y <= max_side:
+		return {"rect": Rect2i(Vector2i.ZERO, size)}
+	if size.x < min_side or size.y < min_side:
+		return {"error": "this tool needs a canvas of at least %d×%d px" % [min_side, min_side]}
+	var used := Rect2i()
+	for image: Image in images:
+		var rect := image.get_used_rect()
+		if rect.has_area():
+			used = rect if not used.has_area() else used.merge(rect)
+	if not used.has_area():
+		return {"error": "the source cel is empty"}
+	if used.size.x > max_side or used.size.y > max_side:
+		return {
+			"error":
+			"the sprite (%d×%d) is larger than this tool accepts (%d px per side)"
+			% [used.size.x, used.size.y, max_side]
+		}
+	var margin := Vector2i(maxi(2, int(used.size.x / 4.0)), maxi(2, int(used.size.y / 4.0)))
+	var wanted := (used.size + margin * 2).clamp(Vector2i(min_side, min_side), Vector2i(max_side, max_side))
+	wanted = wanted.min(size)
+	var position := (used.get_center() - wanted / 2).clamp(Vector2i.ZERO, size - wanted)
+	return {"rect": Rect2i(position, wanted)}
+
+
+func _place_pixellab(plan: Dictionary, sent: Dictionary) -> Dictionary:
+	var region: Rect2i = plan.region
+	var images: Array[Image] = []
+	for image: Image in sent.images:
+		images.append(_into_canvas(image, region))
+	var placed: Dictionary
+	match plan.tool:
+		"rotations":
+			if plan.placement == "layers":
+				var names := PackedStringArray()
+				for i in images.size():
+					var key: String = sent.keys[i]
+					names.append("AI: " + (key if not key.is_empty() else "rotation %d" % (i + 1)))
+				placed = canvas.insert_layers(images, names, plan.frame, plan.layer)
+			else:
+				placed = canvas.insert_frames(images, plan.frame, plan.layer)
+		"rotate":
+			placed = _place(
+				images[0],
+				{
+					"engine": "pixellab",
+					"prompt": "rotate " + str(plan.api.body.to_direction),
+					"target": plan.target,
+					"frame": plan.frame,
+					"layer": plan.layer,
+				},
+				""
+			)
+		"animate", "interpolate":
+			placed = canvas.insert_frames(images, plan.frame, plan.layer)
+	if placed.has("error"):
+		return placed
+	placed["tool"] = plan.tool
+	placed["images"] = images.size()
+	placed["keys"] = Array(sent.keys)
+	placed["region"] = _rect_array(region)
+	return placed
+
+
+## Puts a result on a transparent canvas-sized image, centred on the source region. Pixel
+## art is never rescaled; anything outside the canvas is clipped.
+func _into_canvas(image: Image, region: Rect2i) -> Image:
+	var size: Vector2i = canvas.project().size
+	var result := Image.create_empty(size.x, size.y, false, Image.FORMAT_RGBA8)
+	var offset := region.position + (region.size - image.get_size()) / 2
+	result.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), offset)
+	return result
+
+
+static func _rect_array(rect: Rect2i) -> Array:
+	return [rect.position.x, rect.position.y, rect.size.x, rect.size.y]
 
 
 func _run_agent(request: Dictionary) -> Dictionary:

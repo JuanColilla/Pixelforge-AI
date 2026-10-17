@@ -21,10 +21,10 @@ talks to the bridge and draws with the same `CanvasOps`. That is why `Generator`
 |---|---|
 | `Main.gd` | Wires everything, registers the translation and the dock tab; tears it all down when disabled. |
 | `core/Settings.gd` | `user://ai_studio/settings.cfg`; resolves executables and the MCP folder by following the dev symlink. |
-| `core/CanvasOps.gd` | Canvas reads/writes, layers, frames, undo. The only write path. |
+| `core/CanvasOps.gd` | Canvas reads/writes, layers, frames, undo. The only write path; `insert_frames` / `insert_layers` add a batch as one undo action. |
 | `core/PixelGrid.gd` | Text format: hex palette + base62 index rows (`.` = leave untouched). |
 | `core/Pixelize.gd` | Fit, border flood-fill background removal, hard alpha, k-means / palette mapping. |
-| `core/Generator.gd` | Normalizes requests, picks the engine, pixelizes, places results, variants. |
+| `core/Generator.gd` | Normalizes requests, picks the engine, pixelizes, places results, variants. `run_pixellab` runs the PixelLab tools (reads the cel, crops the region, places the frames). |
 | `core/Http.gd` | Awaitable `HTTPRequest`; decodes PNG/JPEG/WebP by signature. |
 | `core/Translations.gd` | Spanish strings for `tr()`. |
 | `providers/*.gd` | One file per engine; each exposes `generate()` and `cancel()`. |
@@ -43,7 +43,8 @@ One JSON line per request and per response:
 
 Methods: `ping`, `get_project_info`, `view_canvas`, `read_pixels`, `draw_pixels`, `draw_line`,
 `draw_rect`, `fill`, `paint_grid`, `clear_cel`, `batch`, `set_image`, `add_layer`, `add_frame`,
-`select_cel`, `new_project`, `undo`, `redo`, `generate`, `cancel`.
+`select_cel`, `new_project`, `undo`, `redo`, `generate`, `pixellab_tool`, `pixellab_balance`,
+`cancel`.
 
 Every drawing operation goes through `CanvasOps.apply_ops`: each op (`pixels`, `line`, `rect`,
 `fill`, `grid`, `clear`) is validated and compiled to a `Callable`, and the batch is applied to
@@ -56,6 +57,10 @@ sheet). With `new_layer`, the first variant stays visible and the rest go to hid
 `frame`/`layer` = -1 means the current cel; in `view_canvas`, `layer` = -1 blends all visible
 layers.
 
+`pixellab_tool` takes `tool` (`rotations`, `rotate`, `animate`, `interpolate`); with `dry_run`
+it returns the API request and the balance without spending credits. Without a PixelLab token
+both PixelLab methods fail at once, with no network request.
+
 ## Engines
 
 - **ComfyUI**: Z-Image Turbo graph in API format (8 steps, `res_multistep`, cfg 1). The render
@@ -66,9 +71,11 @@ layers.
   workflow can replace the graph using `{{prompt}}`, `{{width}}`, `{{height}}` and `{{seed}}`.
 - **Grok CLI**: `grok -p … --always-approve --output-format json --max-turns 8`, told to save
   the PNG in the job folder. About 30 s and USD 0.08 per image, mostly agent-loop overhead.
-- **PixelLab**: `POST /v2/create-image-pixflux` (16–400 px, native pixel art); supports
-  `color_image` to force a palette and polls `/background-jobs` on 202. Token from
-  `PIXELLAB_API_TOKEN` or the settings.
+- **PixelLab**: `POST /v2/create-image-pixflux` (16–400 px, native pixel art) for text to
+  image; supports `color_image` to force a palette. Four more tools start from the sprite on
+  the canvas: 8 rotations, rotate, animate with text and interpolate (see
+  [pixellab-api.md](pixellab-api.md)). Token from `PIXELLAB_API_TOKEN` or the settings; without
+  one, PixelLab is hidden from the panel. Not yet run with a real token.
 - **Claude, pixels**: `--json-schema` returning palette + base62 rows, up to 128×128. A 16×16
   sprite takes about 17 s with `sonnet`.
 - **Claude, agent**: temporary `--mcp-config` + `--allowedTools mcp__pixelorama`.

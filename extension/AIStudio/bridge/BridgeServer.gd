@@ -184,6 +184,10 @@ func _dispatch(method: String, p: Dictionary) -> Dictionary:
 			return canvas.redo()
 		"generate":
 			return await generator.generate(p)
+		"pixellab_tool":
+			return await generator.run_pixellab(p)
+		"pixellab_balance":
+			return await generator.pixellab_balance()
 		"cancel":
 			generator.cancel()
 			return {"cancelled": true}

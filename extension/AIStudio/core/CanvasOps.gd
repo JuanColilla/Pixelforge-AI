@@ -147,6 +147,108 @@ func write_cel(image: Image, frame: int, layer: int) -> Dictionary:
 	return {"frame": target.frame, "layer": target.layer}
 
 
+## Inserts one frame per image right after [param after_frame], each image on [param layer]
+## and empty cels elsewhere. All frames are a single undo step.
+func insert_frames(images: Array[Image], after_frame: int, layer: int) -> Dictionary:
+	var target := resolve_cel(after_frame, layer)
+	if target.has("error"):
+		return target
+	var current := project()
+	var pixel_layer: BaseLayer = current.layers[target.layer]
+	if not pixel_layer is PixelLayer:
+		return {"error": "layer %d is not a pixel layer" % target.layer}
+	if pixel_layer.is_locked_in_hierarchy():
+		return {"error": "layer %d is locked" % target.layer}
+	if images.is_empty():
+		return {"error": "no frames to insert"}
+	var frames: Array[Frame] = []
+	var indices := PackedInt32Array()
+	for i in images.size():
+		var frame := Frame.new()
+		for l in current.layers.size():
+			if l == target.layer:
+				frame.cels.append(pixel_layer.new_cel_from_image(_fit_to_project(images[i])))
+			else:
+				frame.cels.append(current.layers[l].new_empty_cel())
+		frames.append(frame)
+		indices.append(target.frame + 1 + i)
+	# Animation tags are 1-based; shift or grow them like Pixelorama's own "Add Frame".
+	var insert_at := indices[0]
+	var tags: Array[AnimationTag] = []
+	for tag in current.animation_tags:
+		var shifted: AnimationTag = tag.duplicate()
+		if insert_at >= shifted.from and insert_at <= shifted.to:
+			shifted.to += images.size()
+		elif insert_at < shifted.from:
+			shifted.from += images.size()
+			shifted.to += images.size()
+		tags.append(shifted)
+	var global: Node = api.general.get_global()
+	var undo_redo: UndoRedo = current.undo_redo
+	undo_redo.create_action("AI Studio: insert frames")
+	undo_redo.add_do_method(current.add_frames.bind(frames, indices))
+	undo_redo.add_do_property(current, "animation_tags", tags)
+	undo_redo.add_undo_property(current, "animation_tags", current.animation_tags)
+	undo_redo.add_do_method(current.change_cel.bind(indices[0], target.layer))
+	undo_redo.add_do_method(global.undo_or_redo.bind(false))
+	undo_redo.add_undo_method(current.remove_frames.bind(indices))
+	undo_redo.add_undo_method(current.change_cel.bind(target.frame, target.layer))
+	undo_redo.add_undo_method(global.undo_or_redo.bind(true))
+	undo_redo.commit_action()
+	return {"layer": target.layer, "frames": Array(indices), "frame_count": current.frames.size()}
+
+
+## Adds one pixel layer per image above [param above_layer], each holding its image on
+## [param frame]. All layers are a single undo step.
+func insert_layers(
+	images: Array[Image], names: PackedStringArray, frame: int, above_layer: int
+) -> Dictionary:
+	var target := resolve_cel(frame, above_layer)
+	if target.has("error"):
+		return target
+	if images.is_empty():
+		return {"error": "no layers to insert"}
+	var current := project()
+	var layers: Array[PixelLayer] = []
+	var indices := PackedInt32Array()
+	var cels: Array = []
+	for i in images.size():
+		var layer := PixelLayer.new(current, names[i] if i < names.size() else "AI %d" % (i + 1))
+		layer.parent = current.layers[target.layer].parent
+		var layer_cels: Array[PixelCel] = []
+		for f in current.frames.size():
+			if f == target.frame:
+				layer_cels.append(layer.new_cel_from_image(_fit_to_project(images[i])))
+			else:
+				layer_cels.append(layer.new_empty_cel())
+		layers.append(layer)
+		cels.append(layer_cels)
+		indices.append(target.layer + 1 + i)
+	var global: Node = api.general.get_global()
+	var undo_redo: UndoRedo = current.undo_redo
+	undo_redo.create_action("AI Studio: insert layers")
+	undo_redo.add_do_method(current.add_layers.bind(layers, indices, cels))
+	undo_redo.add_do_method(current.change_cel.bind(target.frame, indices[-1]))
+	undo_redo.add_do_method(global.undo_or_redo.bind(false))
+	undo_redo.add_undo_method(current.remove_layers.bind(indices))
+	undo_redo.add_undo_method(current.change_cel.bind(target.frame, target.layer))
+	undo_redo.add_undo_method(global.undo_or_redo.bind(true))
+	undo_redo.commit_action()
+	return {"frame": target.frame, "layers": Array(indices), "layer_count": current.layers.size()}
+
+
+func _fit_to_project(image: Image) -> Image:
+	var current := project()
+	var sized := Image.create_empty(current.size.x, current.size.y, false, Image.FORMAT_RGBA8)
+	var source := image
+	if source.get_format() != Image.FORMAT_RGBA8:
+		source = image.duplicate()
+		source.convert(Image.FORMAT_RGBA8)
+	sized.blit_rect(source, Rect2i(Vector2i.ZERO, source.get_size()), Vector2i.ZERO)
+	sized.convert(current.get_image_format())
+	return sized
+
+
 ## Reads the cel, lets [param edit] change it and writes it back as one undo step.
 ## [param edit] returns the number of pixels touched.
 func edit_cel(frame: int, layer: int, edit: Callable) -> Dictionary:

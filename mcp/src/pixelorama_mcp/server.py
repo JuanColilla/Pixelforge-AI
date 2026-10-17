@@ -24,6 +24,19 @@ VIEW_TARGET_SIDE = 512
 
 Engine = Literal["comfyui", "grok", "pixellab", "claude_pixels"]
 Target = Literal["new_layer", "current_cel", "new_frame"]
+Direction = Literal["south", "south-east", "east", "north-east", "north", "north-west", "west", "south-west"]
+CameraView = Literal["side", "low top-down", "high top-down"]
+Merged = Annotated[bool, Field(description="Use all visible layers blended as the source instead of one layer.")]
+Seed = Annotated[int, Field(description="-1 lets PixelLab pick.")]
+DryRun = Annotated[
+    bool,
+    Field(description="Return the API request and the account balance without calling the tool (no credits spent)."),
+]
+PIXELLAB_NOTE = (
+    "Only works when a PixelLab API token is set in AI Studio; otherwise it returns "
+    "'PixelLab is not connected'. Uses PixelLab credits: the result reports balance_before and usage, "
+    "and dry_run=true returns the request and balance without running. "
+)
 Frame = Annotated[int, Field(description="Frame index from 0; -1 means the current frame.")]
 Layer = Annotated[int, Field(description="Layer index from 0 (bottom); -1 means the current layer.")]
 ColorText = Annotated[str, Field(description='Hex color "#rrggbb" or "#rrggbbaa", or a color name.')]
@@ -36,7 +49,9 @@ mcp = MCPServer(
         "paint_grid is the fastest way to draw a sprite: a palette plus rows of base62 palette "
         "indices ('.' leaves a pixel untouched). Use batch to send many drawing ops at once: one "
         "call, one undo step. generate_image creates whole sprites with an image model, can return "
-        "several variants, and includes a preview image in its result."
+        "several variants, and includes a preview image in its result. "
+        "The pixellab_* tools turn an existing sprite into directions or animation frames and work only "
+        "when a PixelLab API token is set in AI Studio."
     ),
 )
 
@@ -292,7 +307,8 @@ async def generate_image(
     engine: Annotated[
         Engine,
         Field(description="comfyui runs locally (free, ~3 s per sprite); grok and pixellab are remote "
-                          "and cost credits; claude_pixels draws small sprites (<=128px) as data."),
+                          "and cost credits (pixellab only works with a PixelLab token set in AI Studio); "
+                          "claude_pixels draws small sprites (<=128px) as data."),
     ] = "comfyui",
     width: Annotated[int, Field(description="0 uses the canvas width.")] = 0,
     height: Annotated[int, Field(description="0 uses the canvas height.")] = 0,
@@ -327,6 +343,125 @@ async def generate_image(
     if preview:
         content.append(Image(data=base64.b64decode(preview), format="png"))
     return content
+
+
+def summarize_images(value: Any) -> Any:
+    """Replaces base64 image payloads with their size so dry runs stay readable."""
+    if isinstance(value, dict):
+        if isinstance(value.get("base64"), str):
+            return {**value, "base64": f"<{len(value['base64']) * 3 // 4} bytes>"}
+        return {key: summarize_images(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [summarize_images(item) for item in value]
+    return value
+
+
+async def pixellab_tool(params: dict[str, Any]) -> dict[str, Any]:
+    result = await call("pixellab_tool", params, timeout=GENERATION_TIMEOUT_SEC)
+    if result.get("dry_run"):
+        result["body"] = summarize_images(result.get("body"))
+    return result
+
+
+@mcp.tool()
+async def pixellab_balance() -> dict[str, Any]:
+    """PixelLab account balance: USD credits and remaining subscription generations.
+
+    Only works when a PixelLab API token is set in AI Studio.
+    """
+    return await call("pixellab_balance")
+
+
+@mcp.tool(description=PIXELLAB_NOTE + (
+    "Generate the 8 directional views of the sprite in a cel with PixelLab (generate-8-rotations-v3, "
+    "max 256x256) and place them as 8 new frames after the source frame, or as 8 new layers."
+))
+async def pixellab_rotations(
+    description: Annotated[str, Field(description="Optional hint describing the subject.")] = "",
+    placement: Annotated[
+        Literal["frames", "layers"], Field(description="frames: 8 frames on the source layer; layers: 8 layers.")
+    ] = "frames",
+    frame: Frame = -1,
+    layer: Layer = -1,
+    merged: Merged = False,
+    remove_background: bool = True,
+    seed: Seed = -1,
+    dry_run: DryRun = False,
+) -> dict[str, Any]:
+    return await pixellab_tool({
+        "tool": "rotations", "description": description, "placement": placement, "frame": frame,
+        "layer": layer, "merged": merged, "remove_background": remove_background, "seed": seed,
+        "dry_run": dry_run,
+    })
+
+
+@mcp.tool(description=PIXELLAB_NOTE + (
+    "Rotate the sprite in a cel to one direction and/or camera view with PixelLab (rotate, 16-200 px "
+    "per side) and place the result like generate_image's target."
+))
+async def pixellab_rotate(
+    to_direction: Direction = "east",
+    from_direction: Annotated[Direction, Field(description="Direction the source sprite faces.")] = "south",
+    from_view: CameraView = "side",
+    to_view: Annotated[CameraView | None, Field(description="Defaults to from_view.")] = None,
+    target: Target = "new_layer",
+    frame: Frame = -1,
+    layer: Layer = -1,
+    merged: Merged = False,
+    use_palette: Annotated[bool, Field(description="Force the active Pixelorama palette.")] = False,
+    seed: Seed = -1,
+    dry_run: DryRun = False,
+) -> dict[str, Any]:
+    return await pixellab_tool({
+        "tool": "rotate", "to_direction": to_direction, "from_direction": from_direction,
+        "from_view": from_view, "to_view": to_view or from_view, "target": target, "frame": frame,
+        "layer": layer, "merged": merged, "use_palette": use_palette, "seed": seed, "dry_run": dry_run,
+    })
+
+
+@mcp.tool(description=PIXELLAB_NOTE + (
+    "Animate the sprite in a cel from a text action with PixelLab (animate-with-text-v3, max 256x256, "
+    "width*height*frame_count <= 524288) and insert the frames after the source frame."
+))
+async def pixellab_animate(
+    action: Annotated[str, Field(description="The motion, e.g. 'walking', 'swinging a sword'.")],
+    frame_count: Annotated[int, Field(description="Even number from 4 to 16.")] = 8,
+    frame: Frame = -1,
+    layer: Layer = -1,
+    merged: Merged = False,
+    remove_background: bool = True,
+    seed: Seed = -1,
+    dry_run: DryRun = False,
+) -> dict[str, Any]:
+    return await pixellab_tool({
+        "tool": "animate", "description": action, "frame_count": frame_count, "frame": frame,
+        "layer": layer, "merged": merged, "remove_background": remove_background, "seed": seed,
+        "dry_run": dry_run,
+    })
+
+
+@mcp.tool(description=PIXELLAB_NOTE + (
+    "Generate the in-between frames from one keyframe to another with PixelLab (interpolation-v2, "
+    "16-128 px per side) and insert them right after the start frame."
+))
+async def pixellab_interpolate(
+    action: Annotated[str, Field(description="The transition, e.g. 'powering up', 'morphing'.")],
+    end_frame: Annotated[int, Field(description="End keyframe index; -1 means the frame after the start.")] = -1,
+    frame: Annotated[int, Field(description="Start keyframe index; -1 means the current frame.")] = -1,
+    layer: Layer = -1,
+    merged: Merged = False,
+    remove_background: bool = True,
+    use_palette: Annotated[bool, Field(description="Force the active Pixelorama palette.")] = False,
+    seed: Seed = -1,
+    dry_run: DryRun = False,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "tool": "interpolate", "description": action, "frame": frame, "layer": layer, "merged": merged,
+        "remove_background": remove_background, "use_palette": use_palette, "seed": seed, "dry_run": dry_run,
+    }
+    if end_frame >= 0:
+        params["end_frame"] = end_frame
+    return await pixellab_tool(params)
 
 
 def main() -> None:
